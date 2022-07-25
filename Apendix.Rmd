@@ -1,0 +1,380 @@
+---
+title: "Masters Thesis Apendix"
+author: "Matej Nemec"
+date: "4/22/2022"
+output: html_document
+---
+
+# Intro
+
+This document serves as a supplementary material for my thesis demonstrating some of the scripting done to achieve the presented results. It should allow anyone to reproduce the data and evaluate the results for themselves.
+
+# Setup
+
+## Load libraries, set working directory and seed
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library('flowCore')
+library("rjson")
+library('nougad')
+library('flowWorkspace')
+library('FNN')
+library('ggplot2')
+library('EmbedSOM')
+library('gridExtra')
+library('cowplot')
+library('nougadmt')
+set.seed(42)
+```
+
+Set working directory to the location of this notebook.
+```{r wd}
+try({dr=getSrcDirectory()[1]})#when sourcing the file
+try({dr=dirname(rstudioapi::getActiveDocumentContext()$path)})#for running code directly in rstudio
+setwd(dr) #set for usage as a script/running lines
+knitr::opts_knit$set(root.dir = dr) #set for R markdown chunk execution
+```
+## Define functions
+
+```{r fncs, echo=FALSE}
+trans <- function(x)asinh(x/10)
+gate <- function(data,pair, neighbors,cutoff_perc) {
+  df=data[,pair]
+  nn=get.knn(df, k=neighbors, algorithm=c("kd_tree", "cover_tree", "CR", "brute"))$nn.dist
+  data=cbind(data,rowSums(nn)/ncol(nn))
+  n=ncol(data)
+  new=data[ data[,n] < quantile(data[,n] , cutoff_perc ) , ]
+  new=new[,-n]
+  return(new)
+}
+biexp=flowjo_biexp(
+  channelRange = 4194304,
+  pos = 4.5,
+  neg = 0,
+  widthBasis = -10,
+  inverse = F
+)
+mse<-function(x,y)sum((x-y)^2)/length(x)
+norm=function(x)(x-min(x))/(max(x) - min(x))
+recur_unpack=function(pars,df,todel){
+  par_rows=df[df$pop%in%pars,]
+  new_pars=c()
+  for(r in 1:nrow(par_rows)){
+    if(par_rows[r,'pop']%in%df[,'parent_pop']){
+    par_row=par_rows[r,]
+    children_rows=df[df$parent_pop==par_row$pop,]
+    children_rows$relative_cnt=children_rows$relative_cnt*par_row$relative_cnt
+    for(i in 1:nrow(children_rows)){
+    for(k in 1:ncol(children_rows)){#there is definitely a way to do this better
+      if(is.na(children_rows[i,k])){
+        children_rows[i,k]=par_row[1,k]
+        }
+      }
+    }
+    df[rownames(children_rows),]=children_rows
+    children=children_rows$pop
+    for(child in children){
+      if(nrow(df[df$parent_pop%in%child,])!=0){new_pars=c(new_pars,child)}
+      todel=c(todel,as.integer(rownames(par_row)))
+    }
+    }
+    if(r==nrow(par_rows) && length(new_pars)==0){return(df[-unique(todel),])}
+  }
+    recur_unpack(new_pars,df,todel)
+}
+
+```
+
+
+# Artificial data pipeline 
+
+##Load and parse spectra from json
+
+
+```{r spectra}
+spctr=fromJSON(file = "panel1_lymph_subtracted_fixed.json")
+spectra=matrix(ncol = 64, nrow = length(spctr))
+rnms=c()
+for (i in 1:length(spctr)){
+  spectra[i,]=spctr[[i]]$spectrum$mS
+  rnms=c(rnms,spctr[[i]]$antigen)
+}
+colnames(spectra)=spctr[[1]]$spectrum$channels
+rm(spctr)
+rownames(spectra)=rnms
+```
+
+##Load and parse phenotype table
+
+1. Unpack the tree-like structure of the phenotype table using previously defined recursive function. 
+
+```{r pheno_unpack}
+pheno=read.csv('phenotypes_noAFonly.csv', sep = ',',fileEncoding="UTF-8-BOM")
+todel=c()
+pheno=recur_unpack(c('base'),pheno,todel)
+#write.csv(pheno,'pheno_unpacked.csv') #if you are interested in unpacked phenotypes uncomment this
+```
+
+2. Generate some portion of dead cells for each of the phenotypes
+
+```{r pheno_LD}
+pheno[is.na(pheno)] <- 0
+rownames(pheno)=paste0(pheno$parent_pop,pheno$pop)
+bkp=rownames(pheno)
+pheno$relative_cnt=pheno$relative_cnt*(1/sum(pheno$relative_cnt))
+counts_pheno=pheno$relative_cnt
+pheno=pheno[,-c(1:3)]
+dead=pheno #duplicate
+rownames(dead)=paste0(rep('dead_',nrow(pheno)),rownames(pheno))
+pheno[,'LIVE DEAD Blue']=rep(0,nrow(pheno)) #LD expr for live cells is ~0
+pheno=pheno[,rownames(spectra)]
+cnts_dead=counts_pheno*runif(nrow(pheno), 0.1, 0.25) #amount of dead cells for each phenotype 10-25%
+cnts_dead=cnts_dead/sum(cnts_dead)
+```
+
+3. Generate probability matrices for both live and dead cells.
+
+```{r pheno_prob}
+spectra = spectra/sqrt(rowSums(spectra^2)) #normalize spectra to unit vector(magnitude=1) this is already done if spectra from panelbuilder
+n=1000 #desired cell count
+d=ncol(spectra) #number of detectors
+exp_prob_mtx_normal=pheno[rep( 1:nrow(pheno) , round(counts_pheno*n*0.825) ),]
+exp_prob_mtx_dead=dead[rep( 1:nrow(pheno) , round(cnts_dead*n*0.175) ),]
+#maybe LD expression should increase(complement) with how dead the cells are - eq. with decrease in expr proportion increase LD expr.
+exp_prob_mtx_dead=exp_prob_mtx_dead*runif(nrow(exp_prob_mtx_dead), 0.3, 0.6) #expression magnitude for dead cells 30-60%
+exp_prob_mtx_dead[,'LIVE DEAD Blue']=runif(nrow(exp_prob_mtx_dead), 0.6, 1)#LD expr for dead cells 60-100%
+exp_prob_mtx_dead=exp_prob_mtx_dead[,rownames(spectra)]
+full_prob_mtx=rbind(exp_prob_mtx_normal,exp_prob_mtx_dead)
+```
+
+4. Appropriately amplify expression of typically "strong" markers.Note that strong marker columns are hardcoded, if you use a different phenotype table this must be changed manually. 
+
+```{r pheno_stronk}
+nr=nrow(full_prob_mtx) #get the actual number of cells (probably !=n because of rounding)
+stronk=c(2,3,9,14,17,21) #change this for different phenotypes
+weak=(1:ncol(full_prob_mtx))[!(1:ncol(full_prob_mtx) %in% stronk)]
+k_stronk=length(stronk)
+k_weak=nrow(spectra)-k_stronk
+```
+
+##Generate the data
+
+1. Generate expression (abundance) matrix from probability matrices. 
+
+```{r exprs_fromprob}
+exprs_stronk <- 10^(3+1.5*(matrix(rbinom(nr * k_stronk, 1, as.matrix(full_prob_mtx[,stronk])), nr, k_stronk)+ rnorm(nr*k_stronk, sd=0.2))) 
+exprs_weak <- 10^(2+2*(matrix(rbinom(nr * k_weak, 1, as.matrix(full_prob_mtx[,weak])), nr, k_weak)+ rnorm(nr*k_weak, sd=0.2)))
+exprs=matrix(, nrow = nrow(full_prob_mtx), ncol = ncol(full_prob_mtx))
+exprs[,stronk]=exprs_stronk
+exprs[,weak]=exprs_weak
+rownames(exprs)=rownames(full_prob_mtx)
+```
+
+2. Add expression magnitude based noise to the abundances. This is considered ground truth.
+
+```{r exprs_noise}
+gt=exprs #expression matrix at this stage is our ground truth -> actual abundances with no noise
+for (row in nrow(exprs)){#add noise based on total expression magnitude for each cell -> represents increase in scattering/diffraction/interference
+  exprs[row,]=exprs[row,]+rnorm(ncol(exprs),sd=sum(exprs[row,])*0.001)# with increase in total target expression indirectly causing fluorochromes 
+}#to emit into neighbouring channels even though they are outside of their standard emission spectrum
+colnames(exprs)=colnames(full_prob_mtx) #keep detector names
+rm(full_prob_mtx)
+```
+
+3. Create the emission spectrum for each cell by combining spectra (multiply spectra by abundances and sum).
+
+```{r emission_fromexprs}
+emitted = exprs %*% spectra
+```
+
+4. Add emission based noise.
+
+```{r emission_noise}
+received = emitted + rnorm(length(emitted),sd=0.0005*sqrt(rowSums(emitted^2)))#add noise dependent on total fluorescent power -> sd depends on total energy
+rm(emitted)#and therefore results in higher noise in dimmer channels
+```
+
+# Comparison of unmixing methods
+
+## MSE based comparison
+
+1. Compute nougad unmixing
+
+Change **nthreads** parameter appropriately up to the number of threads available to your machine. 
+
+```{r NGD_mt}
+start.time <- Sys.time()
+ngd=nougadmt(received,spectra = spectra,snw=5,spw=1,nw=200,start=2, iters=500,alpha=0.01,nthreads = 24)$unmixed
+stop.time <- Sys.time()
+cat('Multithreaded nougad: ')
+stop.time-start.time
+```
+
+If you want to compare performance with the singlethreaded implementation.
+
+```{r NGD_st}
+start.time <- Sys.time()
+ngd=nougad(received,spectra = spectra,snw=5,spw=1,nw=200,start=2, iters=500,alpha=0.01)$unmixed
+stop.time <- Sys.time()
+cat('Singlehreaded nougad: ')
+stop.time-start.time
+```
+
+(Speed up from going multithreaded is almost 20x on my Ryzen 9 5900X CPU with 12cores/24threads and 64GB of RAM. For 100000 cells this means going from almost ~112s to ~5.7s which is significant.)
+
+2. Compute OLS unmixing
+
+```{r OLS}
+ols=t(lm(t(received)~t(spectra)+0)$coefficients)
+```
+
+2. Compute weighted OLS 
+
+```{r WOLS}
+wols=ols
+for (i in 1:nr){
+ws=norm(pmax(0,received[i,]/sum(received[i,])))
+wols[i,]=t(lm(t(received[i,,drop=F])~t(spectra)+0,weights =ws)$coefficients)
+}
+```
+
+4. Compute MSE against ground truth
+
+```{r MSE}
+ngd_t=trans(ngd)
+ols_t=trans(ols)
+wols_t=trans(wols)
+gt_t=trans(gt)
+ngd_diff=mse(gt_t,ngd_t)
+wols_diff=mse(gt_t,wols_t)
+ols_diff=mse(gt_t,ols_t)
+cat(paste0('MSE for NGD: ',ngd_diff , '\n'))
+cat(paste0('MSE for OLS: ',ols_diff , '\n'))
+cat(paste0('MSE for WOLS: ',wols_diff , '\n'))
+```
+
+
+##Compare error distributions over individual spectra
+
+1. Compare error distribution shape and magnitude over different methods.
+
+```{r errdist_overall}
+ngd_err=(trans(ngd)-trans(gt))^2
+ols_err=(trans(ols)-trans(gt))^2
+wols_err=(trans(wols)-trans(gt))^2
+x=1:length(ngd_err)
+par(mfrow=c(3,1), tcl=0.5,mgp = c(0, -1.4, 0),mar=c(0,0,1.5,0))
+plot(x,ngd_err,type='l',col='red',pch=16,cex=.1,ylim=c(0,50), main=paste0('NOUGAD MSE=',round(ngd_diff,4),' SD_mse=',round(sd(ngd_err),4)),xaxt='n')
+plot(x,ols_err,type='l',col='red',pch=16,cex=.1,ylim=c(0,50), main=paste0('OLS MSE=',round(ols_diff,4),' SD_mse=',round(sd(ols_err),4)),xaxt='n')
+plot(x,wols_err,type='l',col='red',pch=16,cex=.1,ylim=c(0,50), main=paste0('WOLS MSE=',round(wols_diff,4),' SD_mse=',round(sd(wols_err),4)),xaxt='n')
+```
+2. Compare error distribution of mean per cell errors over all methods
+(Note the "gap" with near 0 errors in all methods - this where dead cells with ~0 expression in all spectra are.)
+```{r errdist_cell}
+total_brightness=rowSums(received)
+ngd_mcr=rowSums(ngd_err)/ncol(ngd_err)
+ols_mcr=rowSums(ols_err)/ncol(ols_err)
+wols_mcr=rowSums(wols_err)/ncol(wols_err)
+rnms=rownames(received)
+rnms=sapply(strsplit(rnms, split='.', fixed=TRUE), function(x) (x[1]))
+uq=unique(rnms)
+occurs=Vectorize(grep,'pattern')(paste0('^',uq,'$'),rnms)
+cnts=as.vector(sapply(occurs, length))
+coords=c(0)
+for (i in 1:length(cnts))
+{
+coords[i+1]=sum(cnts[1:i])
+}
+coords=coords[-length(coords)]
+end_point = 0.5 + length(uq) + length(uq) - 1 #this is the line which does the trick (together with barplot "space = 1" parameter)
+
+x=1:(nrow(received))
+par(mfrow=c(3,1), tcl=0.5,mgp = c(0, -1.4, 0),mar=c(0,0,1.5,0))
+plot(x,ngd_mcr,pch=16,cex=.1,ylim=c(0,15), main='NOUGAD',type='l',col='red', xaxt='n',yaxt='n')
+lines(x, norm(total_brightness)*15 , col = "green")
+legend(round(length(x)-1/7*length(x)), 15, legend=c("Squared error", "Cell luminance"),col=c("red", "green"), lty=1:2)
+axis(2, at = seq(0,15,2),labels = T,gap.axis = 0)
+plot(x,wols_mcr,pch=16,cex=.1,ylim=c(0,15), main='WOLS',type='l',col='red', xaxt='n',xlab='',yaxt='n')
+lines(x, norm(total_brightness)*15 , col = "green")
+text(coords, par("usr")[3]+15, 
+     srt = 90, adj = 1, xpd = TRUE,
+     labels = uq, cex = 0.9)
+axis(1,gap.axis = 1, padj = 0.5, xaxt='n')
+axis(2, at = seq(0,15,2),labels = T,gap.axis = 0)
+plot(x,ols_mcr,pch=16,cex=.1,ylim=c(0,15), main='OLS',type='l',col='red', xaxt='n',yaxt='n')
+lines(x, norm(total_brightness)*15 , col = "green")
+axis(2, at = seq(0,15,2),labels = T,gap.axis = 0)
+```
+
+Correlation of mean per cell error with total cell brightness:
+
+```{r errcor_spec}
+df_ngd=data.frame(cell_brightness=norm(total_brightness),mean_cell_error=norm(ngd_mcr))
+df_ngd=df_ngd[order(df_ngd$mean_cell_error),]
+df_ols=data.frame(cell_brightness=norm(total_brightness),mean_cell_error=norm(ols_mcr))
+df_ols=df_ols[order(df_ols$mean_cell_error),]
+df_wols=data.frame(cell_brightness=norm(total_brightness),mean_cell_error=norm(wols_mcr))
+df_wols=df_wols[order(df_wols$mean_cell_error),]
+
+cn=cor.test(df_ngd$cell_brightness,df_ngd$mean_cell_error)
+co=cor.test(df_ols$cell_brightness,df_ols$mean_cell_error)
+cw=cor.test(df_wols$cell_brightness,df_wols$mean_cell_error)
+
+par(mar=c(0,0,3,0),mfrow=c(1,3))
+plot(df_ngd$cell_brightness,df_ngd$mean_cell_error,pch=16,cex=.1, main=paste0('NOUGAD r=',round(cn$estimate,3),' 95CI=(',round(cn$conf.int[1],2),';',round(cn$conf.int[2],2),')\n p',format.pval(cn$p.value)),xaxt='n',yaxt='n')
+abline(0,1,col='red')
+plot(df_ngd$cell_brightness,df_ols$mean_cell_error,pch=16,cex=.1, main=paste0('OLS r=',round(co$estimate,3),' 95CI=(',round(co$conf.int[1],2),';',round(co$conf.int[2],2),')\n p',format.pval(co$p.value)),xaxt='n',yaxt='n')
+abline(0,1,col='red')
+plot(df_ngd$cell_brightness,df_wols$mean_cell_error,pch=16,cex=.1, main=paste0('WOLS r=',round(cw$estimate,3),' 95CI=(',round(cw$conf.int[1],2),';',round(cw$conf.int[2],2),')\n p',format.pval(cw$p.value)),xaxt='n',yaxt='n')
+abline(0,1,col='red')
+
+```
+
+3. Compare error distribution over different spectra for different methods
+This should serve to look at which spectra are more prone to errors and how/if the error distribution for each spectrum changes depending on the selected method.
+```{r errdist_spec}
+spec_int=norm(rowSums(spectra)) #Total energy of the given spectrum
+mean_ag_expr=norm(colSums(gt))#Mean expression of that spectrum in the data (ground truth)
+
+for (i in 1:nrow(spectra)){
+par(mar=c(0,2,2,0),mfrow=c(1,3))
+ols_vec=ols_err[,i]
+wols_vec=wols_err[,i]
+ngd_vec=ngd_err[,i]
+mx=max(c(max(ols_vec),max(wols_vec),max(ngd_vec)))
+hist(ols_vec,main = paste0(rownames(spectra)[i],' OLS Energy=',round(spec_int[i],2),'\n avg.expr=',round(mean_ag_expr[i],2)),xaxt='n',xlim = c(0,mx),ylim=c(0,n/10),breaks = seq(0, mx, length.out = 16))
+hist(wols_vec,main = paste0(rownames(spectra)[i],' WOLS Energy=',round(spec_int[i],2),'\n avg.expr=',round(mean_ag_expr[i],2)),xaxt='n',xlim = c(0,mx),ylim=c(0,n/10),breaks = seq(0, mx, length.out = 16))
+hist(ngd_vec,main = paste0(rownames(spectra)[i],' NGD Energy=',round(spec_int[i],2),'\n avg.expr=',round(mean_ag_expr[i],2)),xaxt='n',xlim = c(0,mx),ylim=c(0,n/10),breaks = seq(0, mx, length.out = 16))
+}
+
+```
+
+##Compare Nougad against OLS
+
+```{r comp}
+#dims=c(13,5)
+#p=ggplot(df) 
+#p=p+geom_point(aes(x=X1,y=X2,fill=factor(ng_sq_err)),size=0.3)+scale_fill_gradientn(colors = colors)
+#p
+ggplot()  + geom_segment(data=df_ngd,aes(x = X1, y = X2, xend = X1.1, yend = X2.1),colour="red",alpha=0.2)+geom_point(aes(x=df_ngd$X1,y=df_ngd$X2),size=1)+theme_cowplot()
+e <- EmbedSOM::EmbedSOM(gt_exprs, map=EmbedSOM::RandomMap(gt_exprs, 500, coords=EmbedSOM::tSNECoords()), parallel=T)
+
+e <- EmbedSOM::EmbedSOM(gt, map=EmbedSOM::RandomMap(gt, 500, coords=EmbedSOM::tSNECoords()), parallel=T)
+EmbedSOM::PlotEmbed(e,data=gt_exprs, plotf=scattermore::scattermoreplot, cex=.5, alpha=0.3, red=3, green=13)
+#qplot(X1, X2, data=df, colour=ng_sq_err) + scale_colour_gradient(low="yellow", high="red")
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r comp2}
+dims=c(6,7)
+par(mfrow=c(1,3))
+plot(main="GT",gt_exprs[,dims], pch='.', xlab='', ylab='')
+plot(main="OLS",ols_res[,dims], pch='.', xlab='', ylab='')
+plot(main="NGD",res[,dims], pch='.', xlab='', ylab='')
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
