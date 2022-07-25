@@ -220,7 +220,7 @@ cat('Singlehreaded nougad: ')
 stop.time-start.time
 ```
 
-(Speed up from going multithreaded is almost 20x on my Ryzen 9 5900X CPU with 12cores/24threads and 64GB of RAM. For 100000 cells this means going from almost ~112s to ~5.7s which is significant.)
+(Speed up from going multithreaded is almost 20x on my Ryzen 9 5900X CPU with 12cores/24threads and 64GB of RAM. For 100000 cells this means going from ~112s to ~5.7s which is significant.)
 
 2. Compute OLS unmixing
 
@@ -308,7 +308,7 @@ axis(2, at = seq(0,15,2),labels = T,gap.axis = 0)
 
 Correlation of mean per cell error with total cell brightness:
 
-```{r errcor_spec}
+```{r errcor_cell}
 df_ngd=data.frame(cell_brightness=norm(total_brightness),mean_cell_error=norm(ngd_mcr))
 df_ngd=df_ngd[order(df_ngd$mean_cell_error),]
 df_ols=data.frame(cell_brightness=norm(total_brightness),mean_cell_error=norm(ols_mcr))
@@ -323,9 +323,9 @@ cw=cor.test(df_wols$cell_brightness,df_wols$mean_cell_error)
 par(mar=c(0,0,3,0),mfrow=c(1,3))
 plot(df_ngd$cell_brightness,df_ngd$mean_cell_error,pch=16,cex=.1, main=paste0('NOUGAD r=',round(cn$estimate,3),' 95CI=(',round(cn$conf.int[1],2),';',round(cn$conf.int[2],2),')\n p',format.pval(cn$p.value)),xaxt='n',yaxt='n')
 abline(0,1,col='red')
-plot(df_ngd$cell_brightness,df_ols$mean_cell_error,pch=16,cex=.1, main=paste0('OLS r=',round(co$estimate,3),' 95CI=(',round(co$conf.int[1],2),';',round(co$conf.int[2],2),')\n p',format.pval(co$p.value)),xaxt='n',yaxt='n')
+plot(df_ols$cell_brightness,df_ols$mean_cell_error,pch=16,cex=.1, main=paste0('OLS r=',round(co$estimate,3),' 95CI=(',round(co$conf.int[1],2),';',round(co$conf.int[2],2),')\n p',format.pval(co$p.value)),xaxt='n',yaxt='n')
 abline(0,1,col='red')
-plot(df_ngd$cell_brightness,df_wols$mean_cell_error,pch=16,cex=.1, main=paste0('WOLS r=',round(cw$estimate,3),' 95CI=(',round(cw$conf.int[1],2),';',round(cw$conf.int[2],2),')\n p',format.pval(cw$p.value)),xaxt='n',yaxt='n')
+plot(df_wols$cell_brightness,df_wols$mean_cell_error,pch=16,cex=.1, main=paste0('WOLS r=',round(cw$estimate,3),' 95CI=(',round(cw$conf.int[1],2),';',round(cw$conf.int[2],2),')\n p',format.pval(cw$p.value)),xaxt='n',yaxt='n')
 abline(0,1,col='red')
 
 ```
@@ -333,22 +333,58 @@ abline(0,1,col='red')
 3. Compare error distribution over different spectra for different methods
 This should serve to look at which spectra are more prone to errors and how/if the error distribution for each spectrum changes depending on the selected method.
 ```{r errdist_spec}
-spec_int=norm(rowSums(spectra)) #Total energy of the given spectrum
-mean_ag_expr=norm(colSums(gt))#Mean expression of that spectrum in the data (ground truth)
+spec_int=norm(rowSums(spectra)^2) #Total energy of the given spectrum
+mean_ag_expr=norm(colSums(gt)/ncol(gt))#Mean expression of that spectrum in the data (ground truth)
 
 for (i in 1:nrow(spectra)){
 par(mar=c(0,2,2,0),mfrow=c(1,3))
 ols_vec=ols_err[,i]
 wols_vec=wols_err[,i]
 ngd_vec=ngd_err[,i]
-mx=max(c(max(ols_vec),max(wols_vec),max(ngd_vec)))
-hist(ols_vec,main = paste0(rownames(spectra)[i],' OLS Energy=',round(spec_int[i],2),'\n avg.expr=',round(mean_ag_expr[i],2)),xaxt='n',xlim = c(0,mx),ylim=c(0,n/10),breaks = seq(0, mx, length.out = 16))
-hist(wols_vec,main = paste0(rownames(spectra)[i],' WOLS Energy=',round(spec_int[i],2),'\n avg.expr=',round(mean_ag_expr[i],2)),xaxt='n',xlim = c(0,mx),ylim=c(0,n/10),breaks = seq(0, mx, length.out = 16))
-hist(ngd_vec,main = paste0(rownames(spectra)[i],' NGD Energy=',round(spec_int[i],2),'\n avg.expr=',round(mean_ag_expr[i],2)),xaxt='n',xlim = c(0,mx),ylim=c(0,n/10),breaks = seq(0, mx, length.out = 16))
+xmx=max(c(max(ols_vec),max(wols_vec),max(ngd_vec)))
+h_ols <- hist(ols_vec, plot=FALSE,breaks = seq(0, xmx, length.out = 20))
+h_ols$counts=log(h_ols$counts)
+h_ols$counts[h_ols$counts==-Inf]=0
+h_wols <- hist(wols_vec, plot=FALSE,breaks = seq(0, xmx, length.out = 20))
+h_wols$counts=log(h_wols$counts)
+h_wols$counts[h_wols$counts==-Inf]=0
+h_ngd <- hist(ngd_vec, plot=FALSE,breaks = seq(0, xmx, length.out = 20))
+h_ngd$counts=log(h_ngd$counts)
+h_ngd$counts[h_ngd$counts==-Inf]=0
+ymx=max(c(max(h_ols$counts),max(h_wols$counts),max(h_ngd$counts)))
+plot(h_ols,main = paste0(rownames(spectra)[i],' OLS\n E=',round(spec_int[i],3),' M(Ex)r=',round(mean_ag_expr[i],3)),xaxt='n',xlim = c(0,xmx),ylim=c(0,ymx))
+plot(h_wols,main = paste0(rownames(spectra)[i],' WOLS\n E=',round(spec_int[i],3),' M(Ex)=',round(mean_ag_expr[i],3)),xaxt='n',xlim = c(0,xmx),ylim=c(0,ymx),yaxt='n')
+plot(h_ngd,main = paste0(rownames(spectra)[i],' NGD\n E=',round(spec_int[i],3),' M(Ex)=',round(mean_ag_expr[i],3)),xaxt='n',xlim = c(0,xmx),ylim=c(0,ymx),yaxt='n')
 }
 
 ```
 
+Correlation of mean spectrum error with the spectrum energy.
+
+```{r errcor_spec}
+ngd_msr=colSums(ngd_err)/nrow(ngd_err)
+ols_msr=colSums(ols_err)/nrow(ols_err)
+wols_msr=colSums(wols_err)/nrow(wols_err)
+
+df_ngd=data.frame(spectrum_energy=norm(spec_int),mean_spectrum_error=norm(ngd_msr))
+df_ngd=df_ngd[order(df_ngd$mean_spectrum_error),]
+df_ols=data.frame(spectrum_energy=norm(spec_int),mean_spectrum_error=norm(ols_msr))
+df_ols=df_ols[order(df_ols$mean_spectrum_error),]
+df_wols=data.frame(spectrum_energy=norm(spec_int),mean_spectrum_error=norm(wols_msr))
+df_wols=df_wols[order(df_wols$mean_spectrum_error),]
+
+cn=cor.test(ngd_msr,spec_int)
+co=cor.test(ols_msr,spec_int)
+cw=cor.test(wols_msr,spec_int)
+
+par(mar=c(0,0,3,0),mfrow=c(1,3))
+plot(df_ngd$spectrum_energy,df_ngd$mean_spectrum_error,pch=16,cex=.1, main=paste0('NOUGAD r=',round(cn$estimate,3),' 95CI=(',round(cn$conf.int[1],2),';',round(cn$conf.int[2],2),')\n p',format.pval(cn$p.value)),xaxt='n',yaxt='n')
+abline(0,1,col='red')
+plot(df_ols$spectrum_energy,df_ols$mean_spectrum_error,pch=16,cex=.1, main=paste0('OLS r=',round(co$estimate,3),' 95CI=(',round(co$conf.int[1],2),';',round(co$conf.int[2],2),')\n p',format.pval(co$p.value)),xaxt='n',yaxt='n')
+abline(0,1,col='red')
+plot(df_wols$spectrum_energy,df_wols$mean_spectrum_error,pch=16,cex=.1, main=paste0('WOLS r=',round(cw$estimate,3),' 95CI=(',round(cw$conf.int[1],2),';',round(cw$conf.int[2],2),')\n p',format.pval(cw$p.value)),xaxt='n',yaxt='n')
+abline(0,1,col='red')
+```
 ##Compare Nougad against OLS
 
 ```{r comp}
