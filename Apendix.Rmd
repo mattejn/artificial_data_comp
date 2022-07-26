@@ -12,6 +12,7 @@ This document serves as a supplementary material for my thesis demonstrating som
 # Setup
 
 ## Load libraries, set working directory and seed
+
 ```{r setup, include=TRUE}
 knitr::opts_chunk$set(echo = TRUE)
 library('flowCore')
@@ -24,6 +25,7 @@ library('EmbedSOM')
 library('gridExtra')
 library('cowplot')
 library('nougadmt')
+library('gridExtra')
 set.seed(42)
 ```
 
@@ -332,6 +334,7 @@ abline(0,1,col='red')
 
 3. Compare error distribution over different spectra for different methods
 This should serve to look at which spectra are more prone to errors and how/if the error distribution for each spectrum changes depending on the selected method.
+Note that counts (Y axis) are log scaled.
 ```{r errdist_spec}
 spec_int=norm(rowSums(spectra)^2) #Total energy of the given spectrum
 mean_ag_expr=norm(colSums(gt)/ncol(gt))#Mean expression of that spectrum in the data (ground truth)
@@ -378,39 +381,67 @@ co=cor.test(ols_msr,spec_int)
 cw=cor.test(wols_msr,spec_int)
 
 par(mar=c(0,0,3,0),mfrow=c(1,3))
-plot(df_ngd$spectrum_energy,df_ngd$mean_spectrum_error,pch=16,cex=.1, main=paste0('NOUGAD r=',round(cn$estimate,3),' 95CI=(',round(cn$conf.int[1],2),';',round(cn$conf.int[2],2),')\n p',format.pval(cn$p.value)),xaxt='n',yaxt='n')
+plot(df_ngd$spectrum_energy,df_ngd$mean_spectrum_error,pch=16,cex=.1, main=paste0('NOUGAD r=',round(cn$estimate,3),' 95CI=(',round(cn$conf.int[1],2),';',round(cn$conf.int[2],2),')\n p=',format.pval(cn$p.value)),xaxt='n',yaxt='n')
 abline(0,1,col='red')
-plot(df_ols$spectrum_energy,df_ols$mean_spectrum_error,pch=16,cex=.1, main=paste0('OLS r=',round(co$estimate,3),' 95CI=(',round(co$conf.int[1],2),';',round(co$conf.int[2],2),')\n p',format.pval(co$p.value)),xaxt='n',yaxt='n')
+plot(df_ols$spectrum_energy,df_ols$mean_spectrum_error,pch=16,cex=.1, main=paste0('OLS r=',round(co$estimate,3),' 95CI=(',round(co$conf.int[1],2),';',round(co$conf.int[2],2),')\n p=',format.pval(co$p.value)),xaxt='n',yaxt='n')
 abline(0,1,col='red')
-plot(df_wols$spectrum_energy,df_wols$mean_spectrum_error,pch=16,cex=.1, main=paste0('WOLS r=',round(cw$estimate,3),' 95CI=(',round(cw$conf.int[1],2),';',round(cw$conf.int[2],2),')\n p',format.pval(cw$p.value)),xaxt='n',yaxt='n')
+plot(df_wols$spectrum_energy,df_wols$mean_spectrum_error,pch=16,cex=.1, main=paste0('WOLS r=',round(cw$estimate,3),' 95CI=(',round(cw$conf.int[1],2),';',round(cw$conf.int[2],2),')\n p=',format.pval(cw$p.value)),xaxt='n',yaxt='n')
 abline(0,1,col='red')
 ```
-##Compare Nougad against OLS
+##Visually compare unmixed cell coordinates to ground truth
 
-```{r comp}
-#dims=c(13,5)
-#p=ggplot(df) 
-#p=p+geom_point(aes(x=X1,y=X2,fill=factor(ng_sq_err)),size=0.3)+scale_fill_gradientn(colors = colors)
-#p
-ggplot()  + geom_segment(data=df_ngd,aes(x = X1, y = X2, xend = X1.1, yend = X2.1),colour="red",alpha=0.2)+geom_point(aes(x=df_ngd$X1,y=df_ngd$X2),size=1)+theme_cowplot()
-e <- EmbedSOM::EmbedSOM(gt_exprs, map=EmbedSOM::RandomMap(gt_exprs, 500, coords=EmbedSOM::tSNECoords()), parallel=T)
+1. Compare selected marker pairs on 2D plots
 
-e <- EmbedSOM::EmbedSOM(gt, map=EmbedSOM::RandomMap(gt, 500, coords=EmbedSOM::tSNECoords()), parallel=T)
-EmbedSOM::PlotEmbed(e,data=gt_exprs, plotf=scattermore::scattermoreplot, cex=.5, alpha=0.3, red=3, green=13)
-#qplot(X1, X2, data=df, colour=ng_sq_err) + scale_colour_gradient(low="yellow", high="red")
+```{r lines_simple}
+colnames(gt_t)=rownames(spectra)
+colnames(ngd_t)=rownames(spectra)
+colnames(ols_t)=rownames(spectra)
+colnames(wols_t)=rownames(spectra)
+
+ngd_t=as.data.frame(ngd_t)
+gt_t=as.data.frame(gt_t)
+ols_t=as.data.frame(ols_t)
+wols_t=as.data.frame(wols_t)
+
+marker_cords=which(mean_ag_expr>0.3)
+markers=rownames(spectra)[marker_cords]
+markers=markers[markers!='Autofluorescence']
+combos=combn(markers, 2)
+for(i in 1:ncol(combos) ){
+df_ngd=data.frame(X1=gt_t[combos[1,i]][,1],X2=gt_t[combos[2,i]][,1],X1.1=ngd_t[combos[1,i]][,1],X2.1=ngd_t[combos[2,i]][,1])
+df_ols=data.frame(X1=gt_t[combos[1,i]][,1],X2=gt_t[combos[2,i]][,1],X1.1=ols_t[combos[1,i]][,1],X2.1=ols_t[combos[2,i]][,1])
+df_wols=data.frame(X1=gt_t[combos[1,i]][,1],X2=gt_t[combos[2,i]][,1],X1.1=wols_t[combos[1,i]][,1],X2.1=wols_t[combos[2,i]][,1])
+
+p1=ggplot()  + geom_segment(data=df_ngd,aes(x = X1, y = X2, xend = X1.1, yend = X2.1),colour="red",alpha=0.5)+geom_point(aes(x=df_ngd$X1,y=df_ngd$X2),size=0.5,alpha=0.3)+theme_cowplot()+ylab(combos[2,i])+xlab('')+ggtitle('NGD')
+p2=ggplot()  + geom_segment(data=df_ols,aes(x = X1, y = X2, xend = X1.1, yend = X2.1),colour="red",alpha=0.5)+geom_point(aes(x=df_ngd$X1,y=df_ngd$X2),size=0.5,alpha=0.3)+theme_cowplot()+ylab('')+xlab(combos[1,i])+ggtitle('OLS')
+p3=ggplot()  + geom_segment(data=df_wols,aes(x = X1, y = X2, xend = X1.1, yend = X2.1),colour="red",alpha=0.5)+geom_point(aes(x=df_ngd$X1,y=df_ngd$X2),size=0.5,alpha=0.3)+theme_cowplot()+ylab('')+xlab('')+ggtitle('WOLS')
+
+grid.arrange(p1,p2,p3,ncol=3)
+
+}
+
+
+
 
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
+2. Compare points across all markers embedded and visualized in 2D using self-organizing map from EmbedSOM library
 
-```{r comp2}
-dims=c(6,7)
-par(mfrow=c(1,3))
-plot(main="GT",gt_exprs[,dims], pch='.', xlab='', ylab='')
-plot(main="OLS",ols_res[,dims], pch='.', xlab='', ylab='')
-plot(main="NGD",res[,dims], pch='.', xlab='', ylab='')
+```{r lines_esom}
+map=SOM(gt_t,xdim=20,ydim=20)
+e_gt=EmbedSOM(gt_t,map)
+e_ngd=EmbedSOM(ngd_t,map)
+e_ols=EmbedSOM(ols_t,map)
+e_wols=EmbedSOM(wols_t,map)
+p1=ggplot()  + geom_segment(aes(x = e_gt[,1], y =e_gt[,2], xend = e_ngd[,1], yend = e_ngd[,2]),colour="red",alpha=0.3)+geom_point(aes(x=e_gt[,1],y=e_gt[,2]),size=0.4,alpha=0.3)+ggtitle('NGD')+scale_x_discrete(labels = NULL, breaks = NULL) + labs(x = '',y='')+scale_y_discrete(labels = NULL, breaks = NULL)+theme_void()
+p2=ggplot()  + geom_segment(aes(e_gt[,1], y=e_gt[,2], xend = e_ols[,1], yend = e_ols[,2]),colour="red",alpha=0.3)+geom_point(aes(x=e_gt[,1],y=e_gt[,2]),size=0.5,alpha=0.4)+ggtitle('OLS')+scale_x_discrete(labels = NULL, breaks = NULL) + labs(x = '',y='')+scale_y_discrete(labels = NULL, breaks = NULL)+theme_void()
+p3=ggplot()  + geom_segment(aes(x=e_gt[,1],y=e_gt[,2], xend = e_wols[,1], yend = e_wols[,2]),colour="red",alpha=0.3)+geom_point(aes(x=e_gt[,1],y=e_gt[,2]),size=0.5,alpha=0.4)+ggtitle('WOLS')+ scale_x_discrete(labels = NULL, breaks = NULL) + labs(x = '',y='')+scale_y_discrete(labels = NULL, breaks = NULL)+theme_void()
+p1
+p2
+p3
+grid.arrange(p1,p2,p3,ncol=3)
+
 ```
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
