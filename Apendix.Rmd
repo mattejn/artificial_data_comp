@@ -469,8 +469,8 @@ p1=qplot(x_gt, y_gt, colour=Error)+ scale_colour_gradientn(limits = c(mn,mx),col
 p2=qplot(x_ngd, y_ngd, colour=aes_engd) + scale_colour_gradientn(limits = c(mn,mx),colours=c("blue", "yellow", "red"))+ggtitle('NGD')+theme_cowplot()+ylab('')+xlab('')+scale_x_continuous(limits = c(mn_x, mx_x))+scale_y_continuous(limits = c(mn_y, mx_y))+theme_void()
 p3=qplot(x_wols, y_wols, colour=aes_ewols) + scale_colour_gradientn(limits = c(mn,mx),colours=c("blue", "yellow", "red"))+ggtitle('WOLS')+theme_cowplot()+ylab(combos[2,i])+xlab(combos[1,i])+scale_x_continuous(limits = c(mn_x, mx_x))+scale_y_continuous(limits = c(mn_y, mx_y))+theme_void()
 p4=qplot(x_ols, y_ols, colour=aes_eols) + scale_colour_gradientn(limits = c(mn,mx),colours=c("blue", "yellow", "red"))+ggtitle('OLS')+theme_cowplot()+ylab('')+xlab('')+scale_x_continuous(limits = c(mn_x, mx_x))+scale_y_continuous(limits = c(mn_y, mx_y))+theme_void()
-figure=ggarrange(p1,p2,p3,p4,ncol=2,nrow=2,common.legend = T,legend = 'right')
-print(annotate_figure(figure,left = text_grob(combos[2,i], rot = 90),bottom = text_grob(combos[1,i])) )
+figure=ggarrange(p1,p2,p3,p4,ncol=2,nrow=2,common.legend = T,legend = 'right')+theme( plot.background = element_rect())
+print(annotate_figure(figure,left = text_grob(combos[2,i], rot = 90),bottom = text_grob(paste0(combos[1,i],'\n','\n'))))
 }
 ```
 
