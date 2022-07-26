@@ -13,7 +13,7 @@ This document serves as a supplementary material for my thesis demonstrating som
 
 ## Load libraries, set working directory and seed
 
-```{r setup, include=TRUE}
+```{r setup, include=TRUE, echo=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library('flowCore')
 library("rjson")
@@ -25,9 +25,10 @@ library('EmbedSOM')
 library('gridExtra')
 library('cowplot')
 library('nougadmt')
-library('gridExtra')
+library('ggpubr')
 set.seed(42)
 ```
+
 
 Set working directory to the location of this notebook.
 ```{r wd}
@@ -36,6 +37,7 @@ try({dr=dirname(rstudioapi::getActiveDocumentContext()$path)})#for running code 
 setwd(dr) #set for usage as a script/running lines
 knitr::opts_knit$set(root.dir = dr) #set for R markdown chunk execution
 ```
+
 ## Define functions
 
 ```{r fncs, echo=FALSE}
@@ -90,7 +92,7 @@ recur_unpack=function(pars,df,todel){
 
 # Artificial data pipeline 
 
-##Load and parse spectra from json
+## Load and parse spectra from json
 
 
 ```{r spectra}
@@ -106,7 +108,7 @@ rm(spctr)
 rownames(spectra)=rnms
 ```
 
-##Load and parse phenotype table
+## Load and parse phenotype table
 
 1. Unpack the tree-like structure of the phenotype table using previously defined recursive function. 
 
@@ -159,7 +161,7 @@ k_stronk=length(stronk)
 k_weak=nrow(spectra)-k_stronk
 ```
 
-##Generate the data
+## Generate the data
 
 1. Generate expression (abundance) matrix from probability matrices. 
 
@@ -251,12 +253,13 @@ ngd_diff=mse(gt_t,ngd_t)
 wols_diff=mse(gt_t,wols_t)
 ols_diff=mse(gt_t,ols_t)
 cat(paste0('MSE for NGD: ',ngd_diff , '\n'))
-cat(paste0('MSE for OLS: ',ols_diff , '\n'))
 cat(paste0('MSE for WOLS: ',wols_diff , '\n'))
+cat(paste0('MSE for OLS: ',ols_diff , '\n'))
+
 ```
 
 
-##Compare error distributions over individual spectra
+## Compare error distributions 
 
 1. Compare error distribution shape and magnitude over different methods.
 
@@ -267,11 +270,14 @@ wols_err=(trans(wols)-trans(gt))^2
 x=1:length(ngd_err)
 par(mfrow=c(3,1), tcl=0.5,mgp = c(0, -1.4, 0),mar=c(0,0,1.5,0))
 plot(x,ngd_err,type='l',col='red',pch=16,cex=.1,ylim=c(0,50), main=paste0('NOUGAD MSE=',round(ngd_diff,4),' SD_mse=',round(sd(ngd_err),4)),xaxt='n')
-plot(x,ols_err,type='l',col='red',pch=16,cex=.1,ylim=c(0,50), main=paste0('OLS MSE=',round(ols_diff,4),' SD_mse=',round(sd(ols_err),4)),xaxt='n')
 plot(x,wols_err,type='l',col='red',pch=16,cex=.1,ylim=c(0,50), main=paste0('WOLS MSE=',round(wols_diff,4),' SD_mse=',round(sd(wols_err),4)),xaxt='n')
+plot(x,ols_err,type='l',col='red',pch=16,cex=.1,ylim=c(0,50), main=paste0('OLS MSE=',round(ols_diff,4),' SD_mse=',round(sd(ols_err),4)),xaxt='n')
+
 ```
+
 2. Compare error distribution of mean per cell errors over all methods
 (Note the "gap" with near 0 errors in all methods - this where dead cells with ~0 expression in all spectra are.)
+
 ```{r errdist_cell}
 total_brightness=rowSums(received)
 ngd_mcr=rowSums(ngd_err)/ncol(ngd_err)
@@ -325,16 +331,18 @@ cw=cor.test(df_wols$cell_brightness,df_wols$mean_cell_error)
 par(mar=c(0,0,3,0),mfrow=c(1,3))
 plot(df_ngd$cell_brightness,df_ngd$mean_cell_error,pch=16,cex=.1, main=paste0('NOUGAD r=',round(cn$estimate,3),' 95CI=(',round(cn$conf.int[1],2),';',round(cn$conf.int[2],2),')\n p',format.pval(cn$p.value)),xaxt='n',yaxt='n')
 abline(0,1,col='red')
-plot(df_ols$cell_brightness,df_ols$mean_cell_error,pch=16,cex=.1, main=paste0('OLS r=',round(co$estimate,3),' 95CI=(',round(co$conf.int[1],2),';',round(co$conf.int[2],2),')\n p',format.pval(co$p.value)),xaxt='n',yaxt='n')
-abline(0,1,col='red')
 plot(df_wols$cell_brightness,df_wols$mean_cell_error,pch=16,cex=.1, main=paste0('WOLS r=',round(cw$estimate,3),' 95CI=(',round(cw$conf.int[1],2),';',round(cw$conf.int[2],2),')\n p',format.pval(cw$p.value)),xaxt='n',yaxt='n')
 abline(0,1,col='red')
+plot(df_ols$cell_brightness,df_ols$mean_cell_error,pch=16,cex=.1, main=paste0('OLS r=',round(co$estimate,3),' 95CI=(',round(co$conf.int[1],2),';',round(co$conf.int[2],2),')\n p',format.pval(co$p.value)),xaxt='n',yaxt='n')
+abline(0,1,col='red')
+
 
 ```
 
 3. Compare error distribution over different spectra for different methods
 This should serve to look at which spectra are more prone to errors and how/if the error distribution for each spectrum changes depending on the selected method.
 Note that counts (Y axis) are log scaled.
+
 ```{r errdist_spec}
 spec_int=norm(rowSums(spectra)^2) #Total energy of the given spectrum
 mean_ag_expr=norm(colSums(gt)/ncol(gt))#Mean expression of that spectrum in the data (ground truth)
@@ -355,9 +363,10 @@ h_ngd <- hist(ngd_vec, plot=FALSE,breaks = seq(0, xmx, length.out = 20))
 h_ngd$counts=log(h_ngd$counts)
 h_ngd$counts[h_ngd$counts==-Inf]=0
 ymx=max(c(max(h_ols$counts),max(h_wols$counts),max(h_ngd$counts)))
-plot(h_ols,main = paste0(rownames(spectra)[i],' OLS\n E=',round(spec_int[i],3),' M(Ex)r=',round(mean_ag_expr[i],3)),xaxt='n',xlim = c(0,xmx),ylim=c(0,ymx))
+plot(h_ngd,main = paste0(rownames(spectra)[i],' NGD\n E=',round(spec_int[i],3),' M(Ex)=',round(mean_ag_expr[i],3)),xaxt='n',xlim = c(0,xmx),ylim=c(0,ymx))
 plot(h_wols,main = paste0(rownames(spectra)[i],' WOLS\n E=',round(spec_int[i],3),' M(Ex)=',round(mean_ag_expr[i],3)),xaxt='n',xlim = c(0,xmx),ylim=c(0,ymx),yaxt='n')
-plot(h_ngd,main = paste0(rownames(spectra)[i],' NGD\n E=',round(spec_int[i],3),' M(Ex)=',round(mean_ag_expr[i],3)),xaxt='n',xlim = c(0,xmx),ylim=c(0,ymx),yaxt='n')
+plot(h_ols,main = paste0(rownames(spectra)[i],' OLS\n E=',round(spec_int[i],3),' M(Ex)r=',round(mean_ag_expr[i],3)),xaxt='n',xlim = c(0,xmx),ylim=c(0,ymx),yaxt='n')
+
 }
 
 ```
@@ -383,16 +392,20 @@ cw=cor.test(wols_msr,spec_int)
 par(mar=c(0,0,3,0),mfrow=c(1,3))
 plot(df_ngd$spectrum_energy,df_ngd$mean_spectrum_error,pch=16,cex=.1, main=paste0('NOUGAD r=',round(cn$estimate,3),' 95CI=(',round(cn$conf.int[1],2),';',round(cn$conf.int[2],2),')\n p=',format.pval(cn$p.value)),xaxt='n',yaxt='n')
 abline(0,1,col='red')
-plot(df_ols$spectrum_energy,df_ols$mean_spectrum_error,pch=16,cex=.1, main=paste0('OLS r=',round(co$estimate,3),' 95CI=(',round(co$conf.int[1],2),';',round(co$conf.int[2],2),')\n p=',format.pval(co$p.value)),xaxt='n',yaxt='n')
-abline(0,1,col='red')
 plot(df_wols$spectrum_energy,df_wols$mean_spectrum_error,pch=16,cex=.1, main=paste0('WOLS r=',round(cw$estimate,3),' 95CI=(',round(cw$conf.int[1],2),';',round(cw$conf.int[2],2),')\n p=',format.pval(cw$p.value)),xaxt='n',yaxt='n')
 abline(0,1,col='red')
+plot(df_ols$spectrum_energy,df_ols$mean_spectrum_error,pch=16,cex=.1, main=paste0('OLS r=',round(co$estimate,3),' 95CI=(',round(co$conf.int[1],2),';',round(co$conf.int[2],2),')\n p=',format.pval(co$p.value)),xaxt='n',yaxt='n')
+abline(0,1,col='red')
+
 ```
-##Visually compare unmixed cell coordinates to ground truth
+
+## Visually compare unmixed cell coordinates to ground truth
 
 1. Compare selected marker pairs on 2D plots
 
-```{r lines_simple}
+Using lines.
+
+```{r lines_pairs}
 colnames(gt_t)=rownames(spectra)
 colnames(ngd_t)=rownames(spectra)
 colnames(ols_t)=rownames(spectra)
@@ -413,20 +426,53 @@ df_ols=data.frame(X1=gt_t[combos[1,i]][,1],X2=gt_t[combos[2,i]][,1],X1.1=ols_t[c
 df_wols=data.frame(X1=gt_t[combos[1,i]][,1],X2=gt_t[combos[2,i]][,1],X1.1=wols_t[combos[1,i]][,1],X2.1=wols_t[combos[2,i]][,1])
 
 p1=ggplot()  + geom_segment(data=df_ngd,aes(x = X1, y = X2, xend = X1.1, yend = X2.1),colour="red",alpha=0.5)+geom_point(aes(x=df_ngd$X1,y=df_ngd$X2),size=0.5,alpha=0.3)+theme_cowplot()+ylab(combos[2,i])+xlab('')+ggtitle('NGD')
-p2=ggplot()  + geom_segment(data=df_ols,aes(x = X1, y = X2, xend = X1.1, yend = X2.1),colour="red",alpha=0.5)+geom_point(aes(x=df_ngd$X1,y=df_ngd$X2),size=0.5,alpha=0.3)+theme_cowplot()+ylab('')+xlab(combos[1,i])+ggtitle('OLS')
-p3=ggplot()  + geom_segment(data=df_wols,aes(x = X1, y = X2, xend = X1.1, yend = X2.1),colour="red",alpha=0.5)+geom_point(aes(x=df_ngd$X1,y=df_ngd$X2),size=0.5,alpha=0.3)+theme_cowplot()+ylab('')+xlab('')+ggtitle('WOLS')
+p2=ggplot()  + geom_segment(data=df_wols,aes(x = X1, y = X2, xend = X1.1, yend = X2.1),colour="red",alpha=0.5)+geom_point(aes(x=df_ngd$X1,y=df_ngd$X2),size=0.5,alpha=0.3)+theme_cowplot()+ylab('')+xlab(combos[1,i])+ggtitle('WOLS')
+p3=ggplot()  + geom_segment(data=df_ols,aes(x = X1, y = X2, xend = X1.1, yend = X2.1),colour="red",alpha=0.5)+geom_point(aes(x=df_ngd$X1,y=df_ngd$X2),size=0.5,alpha=0.3)+theme_cowplot()+ylab('')+xlab('')+ggtitle('OLS')
 
-grid.arrange(p1,p2,p3,ncol=3)
+ggarrange(p1,p2,p3,ncol=3)
 
 }
 
-
-
-
 ```
 
+Color cells by squared error magnitude.
+
+```{r errcolor_pairs}
+ngd_err=as.data.frame(ngd_err)
+colnames(ngd_err)=rownames(spectra)
+ols_err=as.data.frame(ols_err)
+colnames(ols_err)=rownames(spectra)
+wols_err=as.data.frame(wols_err)
+colnames(wols_err)=rownames(spectra)
+for(i in 1:ncol(combos) ){
+df_ngd=data.frame(X1=gt_t[combos[1,i]][,1],X2=gt_t[combos[2,i]][,1],X1.1=ngd_t[combos[1,i]][,1],X2.1=ngd_t[combos[2,i]][,1])
+df_ols=data.frame(X1=gt_t[combos[1,i]][,1],X2=gt_t[combos[2,i]][,1],X1.1=ols_t[combos[1,i]][,1],X2.1=ols_t[combos[2,i]][,1])
+df_wols=data.frame(X1=gt_t[combos[1,i]][,1],X2=gt_t[combos[2,i]][,1],X1.1=wols_t[combos[1,i]][,1],X2.1=wols_t[combos[2,i]][,1])
+
+p1=ggplot()  +geom_point(aes(x=ngd_t[combos[1,i]][,1],y=ngd_t[combos[2,i]][,1]),size=0.5,alpha=0.3)+theme_cowplot()+ylab(combos[2,i])+xlab('')+ggtitle('NGD')
+p2=ggplot()  + geom_segment(data=df_ols,aes(x = X1, y = X2, xend = X1.1, yend = X2.1),colour="red",alpha=0.5)+geom_point(aes(x=df_ngd$X1,y=df_ngd$X2),size=0.5,alpha=0.3)+theme_cowplot()+ylab('')+xlab(combos[1,i])+ggtitle('OLS')
+p3=ggplot()  + geom_segment(data=df_wols,aes(x = X1, y = X2, xend = X1.1, yend = X2.1),colour="red",alpha=0.5)+geom_point(aes(x=df_ngd$X1,y=df_ngd$X2),size=0.5,alpha=0.3)+theme_cowplot()+ylab('')+xlab('')+ggtitle('WOLS')
+
+ggarrange(p1,p2,p3,ncol=3)
+aes_engd=rowSums(ngd_err[,c(combos[1,i],combos[2,i])])/2
+aes_eols=rowSums(ols_err[,c(combos[1,i],combos[2,i])])/2
+aes_ewols=rowSums(wols_err[,c(combos[1,i],combos[2,i])])/2
+mx=max(c(max(aes_engd),max(aes_eols),max(aes_ewols)))
+mn=min(c(min(aes_engd),min(aes_eols),min(aes_ewols)))
+Error=rep(sqrt(mn),nrow(gt_t))
+p1=qplot(gt_t[combos[1,i]][,1], gt_t[combos[2,i]][,1], colour=Error^2 )+ scale_colour_gradientn(limits = c(mn,mx),colours=c("blue", "yellow", "red"))+theme_void()+ggtitle('Ground Truth')
+p2=qplot(ngd_t[combos[1,i]][,1], ngd_t[combos[2,i]][,1], colour=aes_engd) + scale_colour_gradientn(limits = c(mn,mx),colours=c("blue", "yellow", "red"))+theme_void()+ggtitle('NGD')
+p3=qplot(wols_t[combos[1,i]][,1], wols_t[combos[2,i]][,1], colour=aes_ewols) + scale_colour_gradientn(limits = c(mn,mx),colours=c("blue", "yellow", "red"))+theme_void()+ggtitle('WOLS')
+p4=qplot(ols_t[combos[1,i]][,1], ols_t[combos[2,i]][,1], colour=aes_eols) + scale_colour_gradientn(limits = c(mn,mx),colours=c("blue", "yellow", "red"))+theme_void()+ggtitle('OLS')
+
+ggarrange(p1,p2,p3,p4,ncol=2,nrow=2,common.legend = T,legend = 'right')
+
+}
+```
 
 2. Compare points across all markers embedded and visualized in 2D using self-organizing map from EmbedSOM library
+
+Using lines.
 
 ```{r lines_esom}
 map=SOM(gt_t,xdim=20,ydim=20)
@@ -435,13 +481,19 @@ e_ngd=EmbedSOM(ngd_t,map)
 e_ols=EmbedSOM(ols_t,map)
 e_wols=EmbedSOM(wols_t,map)
 p1=ggplot()  + geom_segment(aes(x = e_gt[,1], y =e_gt[,2], xend = e_ngd[,1], yend = e_ngd[,2]),colour="red",alpha=0.3)+geom_point(aes(x=e_gt[,1],y=e_gt[,2]),size=0.4,alpha=0.3)+ggtitle('NGD')+scale_x_discrete(labels = NULL, breaks = NULL) + labs(x = '',y='')+scale_y_discrete(labels = NULL, breaks = NULL)+theme_void()
-p2=ggplot()  + geom_segment(aes(e_gt[,1], y=e_gt[,2], xend = e_ols[,1], yend = e_ols[,2]),colour="red",alpha=0.3)+geom_point(aes(x=e_gt[,1],y=e_gt[,2]),size=0.5,alpha=0.4)+ggtitle('OLS')+scale_x_discrete(labels = NULL, breaks = NULL) + labs(x = '',y='')+scale_y_discrete(labels = NULL, breaks = NULL)+theme_void()
-p3=ggplot()  + geom_segment(aes(x=e_gt[,1],y=e_gt[,2], xend = e_wols[,1], yend = e_wols[,2]),colour="red",alpha=0.3)+geom_point(aes(x=e_gt[,1],y=e_gt[,2]),size=0.5,alpha=0.4)+ggtitle('WOLS')+ scale_x_discrete(labels = NULL, breaks = NULL) + labs(x = '',y='')+scale_y_discrete(labels = NULL, breaks = NULL)+theme_void()
+p2=ggplot()  + geom_segment(aes(x=e_gt[,1],y=e_gt[,2], xend = e_wols[,1], yend = e_wols[,2]),colour="red",alpha=0.3)+geom_point(aes(x=e_gt[,1],y=e_gt[,2]),size=0.5,alpha=0.4)+ggtitle('WOLS')+ scale_x_discrete(labels = NULL, breaks = NULL) + labs(x = '',y='')+scale_y_discrete(labels = NULL, breaks = NULL)+theme_void()
+p3=ggplot()  + geom_segment(aes(e_gt[,1], y=e_gt[,2], xend = e_ols[,1], yend = e_ols[,2]),colour="red",alpha=0.3)+geom_point(aes(x=e_gt[,1],y=e_gt[,2]),size=0.5,alpha=0.4)+ggtitle('OLS')+scale_x_discrete(labels = NULL, breaks = NULL) + labs(x = '',y='')+scale_y_discrete(labels = NULL, breaks = NULL)+theme_void()
+
 p1
 p2
 p3
-grid.arrange(p1,p2,p3,ncol=3)
+ggarrange(p1,p2,p3,ncol=3)
 
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+Color points by per-cell mean squared error.
+
+```{r errcolor_esom}
+
+```
