@@ -26,6 +26,8 @@ library('gridExtra')
 library('cowplot')
 library('nougadmt')
 library('ggpubr')
+library('scales')
+library('parallel')
 set.seed(42)
 ```
 
@@ -105,6 +107,7 @@ recur_unpack = function(pars, df, todel) {
 }
 generate_artificial_cytometry_data = function(spectra, pheno, n, stronk) {
   #Generate some portion of dead cells for each of the phenotypes
+  n_pheno = nrow(pheno)
   pheno[is.na(pheno)] = 0
   rownames(pheno) = paste0(pheno$parent_pop, pheno$pop)
   bkp = rownames(pheno)
@@ -112,19 +115,18 @@ generate_artificial_cytometry_data = function(spectra, pheno, n, stronk) {
   counts_pheno = pheno$relative_cnt
   pheno = pheno[, -c(1:3)]
   dead = pheno #duplicate
-  rownames(dead) = paste0(rep('dead_', nrow(pheno)), rownames(pheno))
-  pheno[, 'LIVE DEAD Blue'] = rep(0, nrow(pheno)) #LD expr for live cells is ~0
+  rownames(dead) = paste0(rep('dead_', n_pheno), rownames(pheno))
+  pheno[, 'LIVE DEAD Blue'] = rep(0, n_pheno) #LD expr for live cells is ~0
   pheno = pheno[, rownames(spectra)]
-  cnts_dead = counts_pheno * runif(nrow(pheno), 0.1, 0.25) #amount of dead cells for each phenotype 10-25%
+  cnts_dead = counts_pheno * runif(n_pheno, 0.1, 0.25) #amount of dead cells for each phenotype 10-25%
   cnts_dead = cnts_dead / sum(cnts_dead)
   
   #Generate probability matrices separately for live and dead cells
   spectra = spectra / sqrt(rowSums(spectra ^ 2)) #normalize spectra to unit vector(magnitude=1) this is already done if spectra from panelbuilder
-  n = 1000 #desired cell count
   d = ncol(spectra) #number of detectors
-  exp_prob_mtx_normal = pheno[rep(1:nrow(pheno) , round(counts_pheno * n *
-                                                          0.825)), ]
-  exp_prob_mtx_dead = dead[rep(1:nrow(pheno) , round(cnts_dead * n * 0.175)), ]#maybe LD expression should increase(complement) with how dead the cells are - eq. with decrease in expr proportion increase LD expr.
+  exp_prob_mtx_normal = pheno[rep(1:n_pheno , round(counts_pheno * n *
+                                                      0.825)), ]
+  exp_prob_mtx_dead = dead[rep(1:n_pheno , round(cnts_dead * n * 0.175)), ]#maybe LD expression should increase(complement) with how dead the cells are - eq. with decrease in expr proportion increase LD expr.
   exp_prob_mtx_dead = exp_prob_mtx_dead * runif(nrow(exp_prob_mtx_dead), 0.3, 0.6) #expression magnitude for dead cells 30-60%
   exp_prob_mtx_dead[, 'LIVE DEAD Blue'] = runif(nrow(exp_prob_mtx_dead), 0.6, 1)#LD expr for dead cells 60-100%
   exp_prob_mtx_dead = exp_prob_mtx_dead[, rownames(spectra)]
@@ -183,14 +185,16 @@ generate_artificial_cytometry_data = function(spectra, pheno, n, stronk) {
 ```{r spectra}
 spctr = fromJSON(file = "panel1_lymph_subtracted_fixed.json")
 spectra = matrix(ncol = 64, nrow = length(spctr))
-rnms = c()
+spec_names = c()
 for (i in 1:length(spctr)) {
   spectra[i, ] = spctr[[i]]$spectrum$mS
-  rnms = c(rnms, spctr[[i]]$antigen)
+  spec_names = c(spec_names, spctr[[i]]$antigen)
 }
 colnames(spectra) = spctr[[1]]$spectrum$channels
 rm(spctr)
-rownames(spectra) = rnms
+rownames(spectra) = spec_names
+nspectra = nrow(spectra)
+ndetects = ncol(spectra)
 ```
 
 ## Load and parse phenotype table
@@ -217,10 +221,12 @@ Change **nthreads** parameter appropriately up to the number of threads availabl
 
 ```{r NGD_mt}
 stronk = c(2, 3, 9, 14, 17, 21)
-res = generate_artificial_cytometry_data(spectra, pheno, 1000, stronk)
+res = generate_artificial_cytometry_data(spectra, pheno, 5000, stronk)
 received = res[[1]]
 gt = res[[2]]
 nr = res[[3]]
+len_umx = length(gt)
+len_rec = length(received)
 start.time = Sys.time()
 ngd = nougadmt(
   received,
@@ -231,7 +237,7 @@ ngd = nougadmt(
   start = 2,
   iters = 500,
   alpha = 0.01,
-  nthreads = 24
+  nthreads = detectCores()
 )$unmixed
 stop.time = Sys.time()
 cat('Multithreaded nougad: ')
@@ -289,7 +295,6 @@ ols_diff = mse(gt_t, ols_t)
 cat(paste0('MSE for NGD: ', ngd_diff , '\n'))
 cat(paste0('MSE for WOLS: ', wols_diff , '\n'))
 cat(paste0('MSE for OLS: ', ols_diff , '\n'))
-
 ```
 
 
@@ -298,14 +303,14 @@ cat(paste0('MSE for OLS: ', ols_diff , '\n'))
 1. Compare error distribution shape and magnitude over different methods.
 
 ```{r errdist_overall}
-ngd_err = (trans(ngd) - trans(gt)) ^ 2
-ols_err = (trans(ols) - trans(gt)) ^ 2
-wols_err = (trans(wols) - trans(gt)) ^ 2
-x = 1:length(ngd_err)
+ngd_err = (ngd_t - gt_t) ^ 2
+ols_err = (ols_t - gt_t) ^ 2
+wols_err = (wols_t - gt_t) ^ 2
+x = 1:len_umx
 par(
   mfrow = c(3, 1),
   tcl = 0.5,
-  mgp = c(0,-1.4, 0),
+  mgp = c(0, -1.4, 0),
   mar = c(0, 0, 1.5, 0)
 )
 plot(
@@ -341,22 +346,55 @@ plot(
   main = paste0('OLS MSE=', round(ols_diff, 4), ' SD_mse=', round(sd(ols_err), 4)),
   xaxt = 'n'
 )
-
 ```
 
 2. Compare error distribution of mean per cell errors over all methods
 (Note the "gap" with near 0 errors in all methods - this where dead cells with ~0 expression in all spectra are.)
 
 ```{r errdist_cell}
-total_brightness = rowSums(received)
-ngd_mcr = rowSums(ngd_err) / ncol(ngd_err)
-ols_mcr = rowSums(ols_err) / ncol(ols_err)
-wols_mcr = rowSums(wols_err) / ncol(wols_err)
-rnms = rownames(received)
-rnms = sapply(strsplit(rnms, split = '.', fixed = TRUE), function(x)
+res_1k = generate_artificial_cytometry_data(spectra, pheno, 1000, stronk)
+received_1k = res_1k[[1]]
+gt_1k = res_1k[[2]]
+nr_1k = res_1k[[3]]
+ngd_1k = nougadmt(
+  received_1k,
+  spectra = spectra,
+  snw = 5,
+  spw = 1,
+  nw = 200,
+  start = 2,
+  iters = 500,
+  alpha = 0.01,
+  nthreads=detectCores()
+)$unmixed
+
+ols_1k = t(lm(t(received_1k) ~ t(spectra) + 0)$coefficients)
+wols_1k = ols_1k
+for (i in 1:nr_1k) {
+  ws = norm(pmax(0, received_1k[i,] / sum(received_1k[i,])))
+  wols_1k[i,] = t(lm(t(received_1k[i, , drop = F]) ~ t(spectra) + 0, weights =
+                       ws)$coefficients)
+}
+
+
+ngd_t_1k = trans(ngd_1k)
+ols_t_1k = trans(ols_1k)
+wols_t_1k = trans(wols_1k)
+gt_t_1k = trans(gt_1k)
+
+ngd_err_1k = (ngd_t_1k - gt_t_1k) ^ 2
+ols_err_1k = (ols_t_1k - gt_t_1k) ^ 2
+wols_err_1k = (wols_t_1k - gt_t_1k) ^ 2
+
+total_brightness_1k = rowSums(received_1k)
+ngd_mcr_1k = rowSums(ngd_err_1k) / nspectra
+ols_mcr_1k = rowSums(ols_err_1k) / nspectra
+wols_mcr_1k = rowSums(wols_err_1k) / nspectra
+rnms_1k = rownames(received_1k)
+rnms_1k = sapply(strsplit(rnms_1k, split = '.', fixed = TRUE), function(x)
   (x[1]))
-uq = unique(rnms)
-occurs = Vectorize(grep, 'pattern')(paste0('^', uq, '$'), rnms)
+uq = unique(rnms_1k)
+occurs = Vectorize(grep, 'pattern')(paste0('^', uq, '$'), rnms_1k)
 cnts = as.vector(sapply(occurs, length))
 coords = c(0)
 for (i in 1:length(cnts))
@@ -366,16 +404,16 @@ for (i in 1:length(cnts))
 coords = coords[-length(coords)]
 end_point = 0.5 + length(uq) + length(uq) - 1 #this is the line which does the trick (together with barplot "space = 1" parameter)
 
-x = 1:(nrow(received))
+x = 1:nr_1k
 par(
   mfrow = c(3, 1),
   tcl = 0.5,
-  mgp = c(0,-1.4, 0),
+  mgp = c(0, -1.4, 0),
   mar = c(0, 0, 1.5, 0)
 )
 plot(
   x,
-  ngd_mcr,
+  ngd_mcr_1k,
   pch = 16,
   cex = .1,
   ylim = c(0, 15),
@@ -385,9 +423,9 @@ plot(
   xaxt = 'n',
   yaxt = 'n'
 )
-lines(x, norm(total_brightness) * 15 , col = "green")
+lines(x, norm(total_brightness_1k) * 15 , col = alpha('green', 0.5))
 legend(
-  round(length(x) - 1 / 7 * length(x)),
+  round(nr_1k - 1 / 7 * nr_1k),
   15,
   legend = c("Squared error", "Cell luminance"),
   col = c("red", "green"),
@@ -399,7 +437,7 @@ axis(2,
      gap.axis = 0)
 plot(
   x,
-  wols_mcr,
+  wols_mcr_1k,
   pch = 16,
   cex = .1,
   ylim = c(0, 15),
@@ -410,7 +448,7 @@ plot(
   xlab = '',
   yaxt = 'n'
 )
-lines(x, norm(total_brightness) * 15 , col = "green")
+lines(x, norm(total_brightness_1k) * 15 , col = alpha('green', 0.5))
 text(
   coords,
   par("usr")[3] + 15,
@@ -430,7 +468,7 @@ axis(2,
      gap.axis = 0)
 plot(
   x,
-  ols_mcr,
+  ols_mcr_1k,
   pch = 16,
   cex = .1,
   ylim = c(0, 15),
@@ -440,7 +478,7 @@ plot(
   xaxt = 'n',
   yaxt = 'n'
 )
-lines(x, norm(total_brightness) * 15 , col = "green")
+lines(x, norm(total_brightness_1k) * 15 , col = alpha('green', 0.5))
 axis(2,
      at = seq(0, 15, 2),
      labels = T,
@@ -450,21 +488,30 @@ axis(2,
 Correlation of mean per cell error with total cell brightness:
 
 ```{r errcor_cell}
+ngd_err = (ngd_t - gt_t) ^ 2
+ols_err = (ols_t - gt_t) ^ 2
+wols_err = (wols_t - gt_t) ^ 2
+
+total_brightness = rowSums(received)
+ngd_mcr = rowSums(ngd_err) / nspectra
+ols_mcr = rowSums(ols_err) / nspectra
+wols_mcr = rowSums(wols_err) / nspectra
+
 df_ngd = data.frame(
   cell_brightness = norm(total_brightness),
   mean_cell_error = norm(ngd_mcr)
 )
-df_ngd = df_ngd[order(df_ngd$mean_cell_error), ]
+df_ngd = df_ngd[order(df_ngd$mean_cell_error),]
 df_ols = data.frame(
   cell_brightness = norm(total_brightness),
   mean_cell_error = norm(ols_mcr)
 )
-df_ols = df_ols[order(df_ols$mean_cell_error), ]
+df_ols = df_ols[order(df_ols$mean_cell_error),]
 df_wols = data.frame(
   cell_brightness = norm(total_brightness),
   mean_cell_error = norm(wols_mcr)
 )
-df_wols = df_wols[order(df_wols$mean_cell_error), ]
+df_wols = df_wols[order(df_wols$mean_cell_error),]
 
 cn = cor.test(df_ngd$cell_brightness, df_ngd$mean_cell_error)
 co = cor.test(df_ols$cell_brightness, df_ols$mean_cell_error)
@@ -528,7 +575,6 @@ plot(
   yaxt = 'n'
 )
 abline(0, 1, col = 'red')
-
 ```
 
 3. Compare error distribution over different spectra for different methods
@@ -537,9 +583,10 @@ Note that counts (Y axis) are log scaled.
 
 ```{r errdist_spec}
 spec_int = norm(rowSums(spectra) ^ 2) #Total energy of the given spectrum
-mean_ag_expr = norm(colSums(gt) / ncol(gt))#Mean expression of that spectrum in the data (ground truth)
-
-for (i in 1:nrow(spectra)) {
+mean_ag_expr = norm(colSums(gt) / nspectra)#Mean expression of that spectrum in the data (ground truth)
+colvec <- colorRampPalette(c("green", "yellow", "red"))
+cvc = c(colvec(10), rep('red', 10))
+for (i in 1:nspectra) {
   par(mar = c(0, 2, 2, 0), mfrow = c(1, 3))
   ols_vec = ols_err[, i]
   wols_vec = wols_err[, i]
@@ -566,8 +613,9 @@ for (i in 1:nrow(spectra)) {
   ymx = max(c(max(h_ols$counts), max(h_wols$counts), max(h_ngd$counts)))
   plot(
     h_ngd,
+    col = cvc,
     main = paste0(
-      rownames(spectra)[i],
+      spec_names[i],
       ' NGD\n E=',
       round(spec_int[i], 3),
       ' M(Ex)=',
@@ -579,8 +627,9 @@ for (i in 1:nrow(spectra)) {
   )
   plot(
     h_wols,
+    col = cvc,
     main = paste0(
-      rownames(spectra)[i],
+      spec_names[i],
       ' WOLS\n E=',
       round(spec_int[i], 3),
       ' M(Ex)=',
@@ -593,8 +642,9 @@ for (i in 1:nrow(spectra)) {
   )
   plot(
     h_ols,
+    col = cvc,
     main = paste0(
-      rownames(spectra)[i],
+      spec_names[i],
       ' OLS\n E=',
       round(spec_int[i], 3),
       ' M(Ex)r=',
@@ -607,25 +657,24 @@ for (i in 1:nrow(spectra)) {
   )
   
 }
-
 ```
 
 Correlation of mean spectrum error with the spectrum energy.
 
 ```{r errcor_spec}
-ngd_msr = colSums(ngd_err) / nrow(ngd_err)
-ols_msr = colSums(ols_err) / nrow(ols_err)
-wols_msr = colSums(wols_err) / nrow(wols_err)
+ngd_msr = colSums(ngd_err) / nr
+ols_msr = colSums(ols_err) / nr
+wols_msr = colSums(wols_err) / nr
 
 df_ngd = data.frame(spectrum_energy = norm(spec_int),
                     mean_spectrum_error = norm(ngd_msr))
-df_ngd = df_ngd[order(df_ngd$mean_spectrum_error), ]
+df_ngd = df_ngd[order(df_ngd$mean_spectrum_error),]
 df_ols = data.frame(spectrum_energy = norm(spec_int),
                     mean_spectrum_error = norm(ols_msr))
-df_ols = df_ols[order(df_ols$mean_spectrum_error), ]
+df_ols = df_ols[order(df_ols$mean_spectrum_error),]
 df_wols = data.frame(spectrum_energy = norm(spec_int),
                      mean_spectrum_error = norm(wols_msr))
-df_wols = df_wols[order(df_wols$mean_spectrum_error), ]
+df_wols = df_wols[order(df_wols$mean_spectrum_error),]
 
 cn = cor.test(ngd_msr, spec_int)
 co = cor.test(ols_msr, spec_int)
@@ -689,7 +738,6 @@ plot(
   yaxt = 'n'
 )
 abline(0, 1, col = 'red')
-
 ```
 
 ## Visually compare unmixed cells to ground truth in 2D space
@@ -699,38 +747,38 @@ abline(0, 1, col = 'red')
 Using lines.
 
 ```{r lines_pairs}
-colnames(gt_t) = rownames(spectra)
-colnames(ngd_t) = rownames(spectra)
-colnames(ols_t) = rownames(spectra)
-colnames(wols_t) = rownames(spectra)
+colnames(gt_t_1k) = spec_names
+colnames(ngd_t_1k) = spec_names
+colnames(ols_t_1k) = spec_names
+colnames(wols_t_1k) = spec_names
 
-ngd_t = as.data.frame(ngd_t)
-gt_t = as.data.frame(gt_t)
-ols_t = as.data.frame(ols_t)
-wols_t = as.data.frame(wols_t)
+ngd_t_1k = as.data.frame(ngd_t_1k)
+gt_t_1k = as.data.frame(gt_t_1k)
+ols_t_1k = as.data.frame(ols_t_1k)
+wols_t_1k = as.data.frame(wols_t_1k)
 
 marker_cords = which(mean_ag_expr > 0.3)
-markers = rownames(spectra)[marker_cords]
+markers = spec_names[marker_cords]
 markers = markers[markers != 'Autofluorescence']
 combos = combn(markers, 2)
 for (i in 1:ncol(combos)) {
   df_ngd = data.frame(
-    X1 = gt_t[combos[1, i]][, 1],
-    X2 = gt_t[combos[2, i]][, 1],
-    X1.1 = ngd_t[combos[1, i]][, 1],
-    X2.1 = ngd_t[combos[2, i]][, 1]
+    X1 = gt_t_1k[combos[1, i]][, 1],
+    X2 = gt_t_1k[combos[2, i]][, 1],
+    X1.1 = ngd_t_1k[combos[1, i]][, 1],
+    X2.1 = ngd_t_1k[combos[2, i]][, 1]
   )
   df_ols = data.frame(
-    X1 = gt_t[combos[1, i]][, 1],
-    X2 = gt_t[combos[2, i]][, 1],
-    X1.1 = ols_t[combos[1, i]][, 1],
-    X2.1 = ols_t[combos[2, i]][, 1]
+    X1 = gt_t_1k[combos[1, i]][, 1],
+    X2 = gt_t_1k[combos[2, i]][, 1],
+    X1.1 = ols_t_1k[combos[1, i]][, 1],
+    X2.1 = ols_t_1k[combos[2, i]][, 1]
   )
   df_wols = data.frame(
-    X1 = gt_t[combos[1, i]][, 1],
-    X2 = gt_t[combos[2, i]][, 1],
-    X1.1 = wols_t[combos[1, i]][, 1],
-    X2.1 = wols_t[combos[2, i]][, 1]
+    X1 = gt_t_1k[combos[1, i]][, 1],
+    X2 = gt_t_1k[combos[2, i]][, 1],
+    X1.1 = wols_t_1k[combos[1, i]][, 1],
+    X2.1 = wols_t_1k[combos[2, i]][, 1]
   )
   
   p1 = ggplot()  + geom_segment(
@@ -776,25 +824,33 @@ for (i in 1:ncol(combos)) {
   print(ggarrange(p1, p2, p3, ncol = 3))
   
 }
-
 ```
 
 Color cells by squared error magnitude.
 
 ```{r errcolor_pairs}
+colnames(gt_t) = spec_names
+colnames(ngd_t) = spec_names
+colnames(ols_t) = spec_names
+colnames(wols_t) = spec_names
+
+ngd_t = as.data.frame(ngd_t)
+gt_t = as.data.frame(gt_t)
+ols_t = as.data.frame(ols_t)
+wols_t = as.data.frame(wols_t)
+
+
 ngd_err = as.data.frame(ngd_err)
-colnames(ngd_err) = rownames(spectra)
+colnames(ngd_err) = spec_names
 ols_err = as.data.frame(ols_err)
-colnames(ols_err) = rownames(spectra)
+colnames(ols_err) = spec_names
 wols_err = as.data.frame(wols_err)
-colnames(wols_err) = rownames(spectra)
+colnames(wols_err) = spec_names
 for (i in 1:ncol(combos)) {
   aes_engd = rowSums(ngd_err[, c(combos[1, i], combos[2, i])]) / 2
   aes_eols = rowSums(ols_err[, c(combos[1, i], combos[2, i])]) / 2
   aes_ewols = rowSums(wols_err[, c(combos[1, i], combos[2, i])]) / 2
   mx = max(c(max(aes_engd), max(aes_eols), max(aes_ewols)))
-  mn = min(c(min(aes_engd), min(aes_eols), min(aes_ewols)))
-  Error = rep(mn, nrow(gt_t))
   x_gt = gt_t[combos[1, i]][, 1]
   y_gt = gt_t[combos[2, i]][, 1]
   x_ngd = ngd_t[combos[1, i]][, 1]
@@ -807,21 +863,50 @@ for (i in 1:ncol(combos)) {
   mx_y = max(c(max(y_ols), max(y_wols), max(y_ngd), max(y_gt)))
   mn_x = min(c(min(x_ols), min(x_wols), min(x_ngd), min(x_gt)))
   mn_y = min(c(min(y_ols), min(y_wols), min(y_ngd), min(y_gt)))
+  Error = rep(0, nr)
   
-  p1 = qplot(x_gt, y_gt, colour = Error) + scale_colour_gradientn(limits = c(mn, mx),
-                                                                  colours = c("blue", "yellow", "red")) + ggtitle('Ground Truth') + theme_cowplot() +
+  p1 = qplot() + geom_point(aes(x_gt, y_gt, colour = Error),
+                            size = 1,
+                            alpha = 0.5) + scale_colour_gradientn(
+                              limits = c(0, mx),
+                              trans = 'pseudo_log',
+                              colours = c("blue", "yellow", "red"),
+                              labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
+                              breaks = c(0, 2, 5, 10, 20, 40, 60)
+                            ) + ggtitle('Ground Truth') + theme_cowplot() +
     ylab('') + xlab('') + scale_x_continuous(limits = c(mn_x, mx_x)) + scale_y_continuous(limits = c(mn_y, mx_y)) +
     theme_void()
-  p2 = qplot(x_ngd, y_ngd, colour = aes_engd) + scale_colour_gradientn(limits = c(mn, mx),
-                                                                       colours = c("blue", "yellow", "red")) + ggtitle('NGD') + theme_cowplot() +
+  p2 = qplot() + geom_point(aes(x_ngd, y_ngd, colour = aes_engd),
+                            size = 1,
+                            alpha = 0.5) + scale_colour_gradientn(
+                              limits = c(0, mx),
+                              trans = 'pseudo_log',
+                              colours = c("blue", "yellow", "red"),
+                              labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
+                              breaks = c(0, 2, 5, 10, 20, 40, 60)
+                            ) + ggtitle('NGD') + theme_cowplot() +
     ylab('') + xlab('') + scale_x_continuous(limits = c(mn_x, mx_x)) + scale_y_continuous(limits = c(mn_y, mx_y)) +
     theme_void()
-  p3 = qplot(x_wols, y_wols, colour = aes_ewols) + scale_colour_gradientn(limits = c(mn, mx),
-                                                                          colours = c("blue", "yellow", "red")) + ggtitle('WOLS') + theme_cowplot() +
+  p3 = qplot() + geom_point(aes(x_wols, y_wols, colour = aes_ewols),
+                            size = 1,
+                            alpha = 0.5) + scale_colour_gradientn(
+                              limits = c(0, mx),
+                              trans = 'pseudo_log',
+                              colours = c("blue", "yellow", "red"),
+                              labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
+                              breaks = c(0, 2, 5, 10, 20, 40, 60)
+                            ) + ggtitle('WOLS') + theme_cowplot() +
     ylab(combos[2, i]) + xlab(combos[1, i]) + scale_x_continuous(limits = c(mn_x, mx_x)) +
     scale_y_continuous(limits = c(mn_y, mx_y)) + theme_void()
-  p4 = qplot(x_ols, y_ols, colour = aes_eols) + scale_colour_gradientn(limits = c(mn, mx),
-                                                                       colours = c("blue", "yellow", "red")) + ggtitle('OLS') + theme_cowplot() +
+  p4 = qplot() + geom_point(aes(x_ols, y_ols, colour = aes_eols),
+                            size = 1,
+                            alpha = 0.5) + scale_colour_gradientn(
+                              limits = c(0, mx),
+                              trans = 'pseudo_log',
+                              colours = c("blue", "yellow", "red"),
+                              labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
+                              breaks = c(0, 2, 5, 10, 20, 40, 60)
+                            ) + ggtitle('OLS') + theme_cowplot() +
     ylab('') + xlab('') + scale_x_continuous(limits = c(mn_x, mx_x)) + scale_y_continuous(limits = c(mn_y, mx_y)) +
     theme_void()
   figure = ggarrange(
@@ -891,28 +976,52 @@ p1
 p2
 p3
 ggarrange(p1, p2, p3, ncol = 3)
-
 ```
 
 
 Color points by per-cell mean squared error.
 
 ```{r errcolor_esom}
-
-Error = rep(min(c(
-  unname(ngd_mcr), unname(ols_mcr), unname(wols_mcr)
-)), nrow(gt))
-p1 = qplot(e_gt[, 1], e_gt[, 2], colour = Error) + scale_colour_gradientn(limits = c(mn, mx),
-                                                                          colours = c("blue", "yellow", "red")) + ggtitle('Ground Truth') + theme_cowplot() +
+Error = rep(0, nr)
+p1 = qplot() + geom_point(aes(e_gt[, 1], e_gt[, 2], colour = Error),
+                          size = 1,
+                          alpha = 0.5) + scale_colour_gradientn(
+                            limits = c(0, mx),
+                            trans = 'pseudo_log',
+                            colours = c("blue", "yellow", "red"),
+                            labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
+                            breaks = c(0, 2, 5, 10, 20, 40, 60)
+                          ) + ggtitle('Ground Truth') + theme_cowplot() +
   ylab('') + xlab('') + theme_void()
-p2 = qplot(e_ngd[, 1], e_ngd[, 2], colour = unname(ngd_mcr)) + scale_colour_gradientn(limits = c(mn, mx),
-                                                                                      colours = c("blue", "yellow", "red")) + ggtitle('NGD') + theme_cowplot() +
+p2 = qplot() + geom_point(aes(e_ngd[, 1], e_ngd[, 2], colour = unname(ngd_mcr)),
+                          size = 1,
+                          alpha = 0.5) + scale_colour_gradientn(
+                            limits = c(0, mx),
+                            trans = 'pseudo_log',
+                            colours = c("blue", "yellow", "red"),
+                            labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
+                            breaks = c(0, 2, 5, 10, 20, 40, 60)
+                          ) + ggtitle('NGD') + theme_cowplot() +
   ylab('') + xlab('') + theme_void()
-p3 = qplot(e_wols[, 1], e_wols[, 2], colour = unname(wols_mcr)) + scale_colour_gradientn(limits = c(mn, mx),
-                                                                                         colours = c("blue", "yellow", "red")) + ggtitle('WOLS') + theme_cowplot() +
+p3 = qplot() + geom_point(aes(e_wols[, 1], e_wols[, 2], colour = unname(wols_mcr)),
+                          size = 1,
+                          alpha = 0.5) + scale_colour_gradientn(
+                            limits = c(0, mx),
+                            trans = 'pseudo_log',
+                            colours = c("blue", "yellow", "red"),
+                            labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
+                            breaks = c(0, 2, 5, 10, 20, 40, 60)
+                          ) + ggtitle('WOLS') + theme_cowplot() +
   ylab(combos[2, i]) + xlab(combos[1, i]) + theme_void()
-p4 = qplot(e_ols[, 1], e_ols[, 2], colour = unname(ols_mcr)) + scale_colour_gradientn(limits = c(mn, mx),
-                                                                                      colours = c("blue", "yellow", "red")) + ggtitle('OLS') + theme_cowplot() +
+p4 = qplot() + geom_point(aes(e_ols[, 1], e_ols[, 2], colour = unname(ols_mcr)),
+                          size = 1,
+                          alpha = 0.5) + scale_colour_gradientn(
+                            limits = c(0, mx),
+                            trans = 'pseudo_log',
+                            colours = c("blue", "yellow", "red"),
+                            labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
+                            breaks = c(0, 2, 5, 10, 20, 40, 60)
+                          ) + ggtitle('OLS') + theme_cowplot() +
   ylab('') + xlab('') + theme_void()
 ggarrange(
   p1,
