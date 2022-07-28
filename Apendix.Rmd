@@ -28,6 +28,7 @@ library('nougadmt')
 library('ggpubr')
 library('scales')
 library('parallel')
+library('ggsci')
 set.seed(42)
 ```
 
@@ -402,7 +403,6 @@ for (i in 1:length(cnts))
   coords[i + 1] = sum(cnts[1:i])
 }
 coords = coords[-length(coords)]
-end_point = 0.5 + length(uq) + length(uq) - 1 #this is the line which does the trick (together with barplot "space = 1" parameter)
 
 x = 1:nr_1k
 par(
@@ -929,14 +929,29 @@ for (i in 1:ncol(combos)) {
 
 2. Compare points across all markers embedded and visualized in 2D using self-organizing map from EmbedSOM library
 
-Using lines.
+Color embedded cells based on their type from ground truth. 
 
-```{r lines_esom}
+```{r ctypes_esom}
 map = SOM(gt_t, xdim = 20, ydim = 20)
 e_gt = EmbedSOM(gt_t, map)
 e_ngd = EmbedSOM(ngd_t, map)
 e_ols = EmbedSOM(ols_t, map)
 e_wols = EmbedSOM(wols_t, map)
+
+rnms = sapply(strsplit(rownames(received), split = '.', fixed = TRUE), function(x)
+  (x[1]))
+uq = unique(rnms)
+distinct20=c('#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080', '#ffffff', '#000000')
+qplot() + geom_point(aes(e_gt[, 1], e_gt[, 2], colour = rnms),
+                          size = 1,
+                          alpha = 0.5)  + ggtitle('Ground Truth') + theme_cowplot() +
+  ylab('') + xlab('') + theme_void()+scale_color_manual(breaks = uq,values = distinct20)+guides(color=guide_legend(ncol=2,title="Cell type"))
+```
+
+Using lines.
+
+```{r lines_esom}
+
 p1 = ggplot()  + geom_segment(
   aes(
     x = e_gt[, 1],
@@ -1033,4 +1048,25 @@ ggarrange(
   common.legend = T,
   legend = 'right'
 )
+```
+
+```{r ctypes_errstat}
+#one-to-all
+for(un in uq){
+  coords_n=which(rnms==un)
+  rs=t.test(norm(log(as.matrix(ngd_err[coords_n,]))),norm(log(as.matrix(ngd_err[-coords_n,]))))
+  if(rs$p.value<0.05)
+    {print(paste0(un,' type is significantly different from other types combined with p-value of ',rs$p.value))}
+}
+combinations=combn(uq,2)
+#one-to-one
+for( i in 1:ncol(combinations))
+{
+  coords_a=which(rnms==combinations[1,i])
+  coords_b=which(rnms==combinations[2,i])
+  rs=t.test(norm(log(as.matrix(ngd_err[coords_a,]))),norm(log(as.matrix(ngd_err[coords_b,]))))
+  if(rs$p.value<0.05)
+    {print(paste0(combinations[1,i],' type is significantly different from ',combinations[2,i],' type with p-value of ',rs$p.value))}
+}
+
 ```
