@@ -70,8 +70,6 @@ biexp = flowjo_biexp(
   widthBasis = -10,
   inverse = F
 )
-mse = function(x, y)
-  sum((x - y) ^ 2) / length(x)
 norm = function(x)
   (x - min(x)) / (max(x) - min(x))
 recur_unpack = function(pars, df, todel) {
@@ -172,8 +170,71 @@ generate_artificial_cytometry_data = function(spectra, pheno, n, stronk) {
   received = emitted + rnorm(length(emitted), sd = 0.0005 * sqrt(rowSums(emitted ^
                                                                            2)))#add noise dependent on total fluorescent power -> sd depends on total energy
   rm(emitted)#and therefore results in higher noise in dimmer channels
+  colnames(gt) = rownames(spectra)
   return(list(received, gt, nr))
   
+}
+get_data_struct = function(spectra, pheno, n, stronk) {
+  data = generate_artificial_cytometry_data(spectra, pheno, n, stronk)
+  res = list()
+  spec_nms = row.names(spectra)
+  nspectra = nrow(spectra)
+  res[['received']] = data[[1]]
+  res[['gt_trans']] = as.data.frame(trans(data[[2]]))
+  colnames(res[['gt_trans']]) = spec_nms
+  res[['n']] = data[[3]]
+  rm(data)
+  res[['cell_brightness']] = rowSums(res[['received']])
+  res[['ngd']] = list()
+  res[['ngd']][['unmix_trans']] = as.data.frame(trans(
+    nougadmt(
+      res[['received']],
+      spectra = spectra,
+      snw = 5,
+      spw = 1,
+      nw = 200,
+      start = 2,
+      iters = 500,
+      alpha = 0.01,
+      nthreads = detectCores()
+    )$unmixed
+  ))
+  res[['ols']] = list()
+  res[['ols']][['unmix_trans']] = as.data.frame(trans(t(lm(
+    t(res[['received']]) ~ t(spectra) + 0
+  )$coefficients)))
+  res[['wols']] = list()
+  res[['wols']][['unmix_trans']] = res[['ols']][['unmix_trans']]
+  for (i in 1:res[['n']]) {
+    ws = norm(pmax(0, res[['received']][i, ] / sum(res[['received']][i, ])))
+    res[['wols']][['unmix_trans']][i, ] = trans(t(lm(t(res[['received']][i, , drop = F]) ~ t(spectra) + 0, weights =
+                                                       ws)$coefficients))
+  }
+  for (toclamp in c('ngd', 'wols', 'ols'))
+  {
+    clp = paste0('zeroclamp_', toclamp)
+    res[[clp]] = list()
+    res[[clp]][['unmix_trans']] = as.data.frame(res[[toclamp]][['unmix_trans']])
+    res[[clp]][['unmix_trans']][res[[clp]][['unmix_trans']] < 0] = 0
+  }
+  for (method in c('ngd',
+                   'ols',
+                   'wols',
+                   'zeroclamp_ngd',
+                   'zeroclamp_ols',
+                   'zeroclamp_wols')) {
+    res[[method]][['sq_err']] = as.data.frame((res[[method]][['unmix_trans']] - res[['gt_trans']]) ^
+                                                2)
+    colnames(res[[method]][['sq_err']]) = spec_nms
+    res[[method]][['mean_cell_err']] = rowSums(res[[method]][['sq_err']]) /
+      nspectra
+    res[[method]][['mean_spec_err']] = colSums(res[[method]][['sq_err']]) /
+      res[['n']]
+    res[[method]][['mse']] = sum(res[[method]][['sq_err']]) / (res[['n']] *
+                                                                 nspectra)
+    colnames(res[[method]][['unmix_trans']]) = spec_nms
+  }
+  return(res)
 }
 ```
 
@@ -216,21 +277,36 @@ pheno = recur_unpack(c('base'), pheno, todel)
 
 ## MSE based comparison
 
-1. Compute nougad unmixing
-
-Change **nthreads** parameter appropriately up to the number of threads available to your machine. 
+1. Generate data and compute unmixing using Nougad, WOLS and OLS.
 
 ```{r NGD_mt}
 stronk = c(2, 3, 9, 14, 17, 21)
-res = generate_artificial_cytometry_data(spectra, pheno, 5000, stronk)
-received = res[[1]]
-gt = res[[2]]
-nr = res[[3]]
-len_umx = length(gt)
-len_rec = length(received)
+
+small = get_data_struct(spectra, pheno, 2000, stronk)
+med = get_data_struct(spectra, pheno, 10000, stronk)
+big = get_data_struct(spectra, pheno, 100000, stronk)
+```
+
+If you want to compare performance with the singlethreaded implementation. THIS CAN TAKE A LONG TIME on a weaker system.
+
+```{r NGD_st}
 start.time = Sys.time()
-ngd = nougadmt(
-  received,
+tmp = nougad(
+  big$received,
+  spectra = spectra,
+  snw = 5,
+  spw = 1,
+  nw = 200,
+  start = 2,
+  iters = 500,
+  alpha = 0.01
+)$unmixed
+stop.time = Sys.time()
+cat('Singlehreaded nougad: ')
+stop.time - start.time
+start.time = Sys.time()
+tmp = nougadmt(
+  big$received,
   spectra = spectra,
   snw = 5,
   spw = 1,
@@ -243,71 +319,29 @@ ngd = nougadmt(
 stop.time = Sys.time()
 cat('Multithreaded nougad: ')
 stop.time - start.time
-```
-
-If you want to compare performance with the singlethreaded implementation.
-
-```{r NGD_st}
-start.time = Sys.time()
-ngd = nougad(
-  received,
-  spectra = spectra,
-  snw = 5,
-  spw = 1,
-  nw = 200,
-  start = 2,
-  iters = 500,
-  alpha = 0.01
-)$unmixed
-stop.time = Sys.time()
-cat('Singlehreaded nougad: ')
-stop.time - start.time
+rm(tmp)
 ```
 
 (Speed up from going multithreaded is almost 20x on my Ryzen 9 5900X CPU with 12cores/24threads and 64GB of RAM. For 100000 cells this means going from ~112s to ~5.7s which is significant.)
 
-2. Compute OLS unmixing
-
-```{r OLS}
-ols = t(lm(t(received) ~ t(spectra) + 0)$coefficients)
-```
-
-2. Compute weighted OLS 
-
-```{r WOLS}
-wols = ols
-for (i in 1:nr) {
-  ws = norm(pmax(0, received[i, ] / sum(received[i, ])))
-  wols[i, ] = t(lm(t(received[i, , drop = F]) ~ t(spectra) + 0, weights =
-                     ws)$coefficients)
-}
-```
-
-4. Compute MSE against ground truth
+4. Compare MSE against ground truth
 
 ```{r MSE}
-ngd_t = trans(ngd)
-ols_t = trans(ols)
-wols_t = trans(wols)
-gt_t = trans(gt)
-ngd_diff = mse(gt_t, ngd_t)
-wols_diff = mse(gt_t, wols_t)
-ols_diff = mse(gt_t, ols_t)
-cat(paste0('MSE for NGD: ', ngd_diff , '\n'))
-cat(paste0('MSE for WOLS: ', wols_diff , '\n'))
-cat(paste0('MSE for OLS: ', ols_diff , '\n'))
+cat(paste0('MSE for NGD: ', big$ngd$mse , '\n'))
+cat(paste0('MSE for WOLS: ', big$ols$mse , '\n'))
+cat(paste0('MSE for OLS: ', big$wols$mse , '\n'))
+cat(paste0('MSE for NGD clamped to 0: ', big$zeroclamp_ngd$mse , '\n'))
+cat(paste0('MSE for WOLS clamped to 0: ', big$zeroclamp_ols$mse , '\n'))
+cat(paste0('MSE for OLS clamped to 0: ', big$zeroclamp_wols$mse , '\n'))
 ```
 
 
 ## Compare error distributions 
 
-1. Compare error distribution shape and magnitude over different methods.
+1. Compare error distribution shape and magnitude over different methods. (do)
 
 ```{r errdist_overall}
-ngd_err = (ngd_t - gt_t) ^ 2
-ols_err = (ols_t - gt_t) ^ 2
-wols_err = (wols_t - gt_t) ^ 2
-x = 1:len_umx
+x = 1:(med$n * nspectra)
 par(
   mfrow = c(3, 1),
   tcl = 0.5,
@@ -316,35 +350,101 @@ par(
 )
 plot(
   x,
-  ngd_err,
+  as.matrix(med$ngd$sq_err),
   type = 'l',
   col = 'red',
   pch = 16,
   cex = .1,
   ylim = c(0, 50),
-  main = paste0('NOUGAD MSE=', round(ngd_diff, 4), ' SD_mse=', round(sd(ngd_err), 4)),
+  main = paste0('NOUGAD MSE=', round(med$ngd$mse, 4), ' SD_mse=', round(sd(
+    as.matrix(med$ngd$sq_err)
+  ), 4)),
   xaxt = 'n'
 )
 plot(
   x,
-  wols_err,
+  as.matrix(med$wols$sq_err),
   type = 'l',
   col = 'red',
   pch = 16,
   cex = .1,
   ylim = c(0, 50),
-  main = paste0('WOLS MSE=', round(wols_diff, 4), ' SD_mse=', round(sd(wols_err), 4)),
+  main = paste0('WOLS MSE=', round(med$wols$mse, 4), ' SD_mse=', round(sd(
+    as.matrix(med$wols$sq_err)
+  ), 4)),
   xaxt = 'n'
 )
 plot(
   x,
-  ols_err,
+  as.matrix(med$ols$sq_err),
   type = 'l',
   col = 'red',
   pch = 16,
   cex = .1,
   ylim = c(0, 50),
-  main = paste0('OLS MSE=', round(ols_diff, 4), ' SD_mse=', round(sd(ols_err), 4)),
+  main = paste0('OLS MSE=', round(med$ols$mse, 4), ' SD_mse=', round(sd(
+    as.matrix(med$ols$sq_err)
+  ), 4)),
+  xaxt = 'n'
+)
+par(
+  mfrow = c(3, 1),
+  tcl = 0.5,
+  mgp = c(0, -1.4, 0),
+  mar = c(0, 0, 1.5, 0)
+)
+plot(
+  x,
+  as.matrix(med$zeroclamp_ngd$sq_err),
+  type = 'l',
+  col = 'red',
+  pch = 16,
+  cex = .1,
+  ylim = c(0, 50),
+  main = paste0(
+    '0 clamped NOUGAD MSE=',
+    round(med$zeroclamp_ngd$mse, 4),
+    ' SD_mse=',
+    round(sd(as.matrix(
+      med$zeroclamp_ngd$sq_err
+    )), 4)
+  ),
+  xaxt = 'n'
+)
+plot(
+  x,
+  as.matrix(med$zeroclamp_wols$sq_err),
+  type = 'l',
+  col = 'red',
+  pch = 16,
+  cex = .1,
+  ylim = c(0, 50),
+  main = paste0(
+    '0 clamped WOLS MSE=',
+    round(med$zeroclamp_wols$mse, 4),
+    ' SD_mse=',
+    round(sd(as.matrix(
+      med$zeroclamp_wols$sq_err
+    )), 4)
+  ),
+  xaxt = 'n'
+)
+plot(
+  x,
+  as.matrix(med$zeroclamp_ols$sq_err),
+  type = 'l',
+  col = 'red',
+  pch = 16,
+  cex = .1,
+  ylim = c(0, 50),
+  main = paste0(
+    '0 clamped OLS MSE=',
+    round(med$zeroclamp_ols$mse, 4),
+    ' SD_mse=',
+    round(sd(as.matrix(
+      med$zeroclamp_ols$sq_err
+    )), 4)
+  ),
   xaxt = 'n'
 )
 ```
@@ -353,58 +453,20 @@ plot(
 (Note the "gap" with near 0 errors in all methods - this where dead cells with ~0 expression in all spectra are.)
 
 ```{r errdist_cell}
-res_1k = generate_artificial_cytometry_data(spectra, pheno, 1000, stronk)
-received_1k = res_1k[[1]]
-gt_1k = res_1k[[2]]
-nr_1k = res_1k[[3]]
-ngd_1k = nougadmt(
-  received_1k,
-  spectra = spectra,
-  snw = 5,
-  spw = 1,
-  nw = 200,
-  start = 2,
-  iters = 500,
-  alpha = 0.01,
-  nthreads=detectCores()
-)$unmixed
-
-ols_1k = t(lm(t(received_1k) ~ t(spectra) + 0)$coefficients)
-wols_1k = ols_1k
-for (i in 1:nr_1k) {
-  ws = norm(pmax(0, received_1k[i,] / sum(received_1k[i,])))
-  wols_1k[i,] = t(lm(t(received_1k[i, , drop = F]) ~ t(spectra) + 0, weights =
-                       ws)$coefficients)
-}
-
-
-ngd_t_1k = trans(ngd_1k)
-ols_t_1k = trans(ols_1k)
-wols_t_1k = trans(wols_1k)
-gt_t_1k = trans(gt_1k)
-
-ngd_err_1k = (ngd_t_1k - gt_t_1k) ^ 2
-ols_err_1k = (ols_t_1k - gt_t_1k) ^ 2
-wols_err_1k = (wols_t_1k - gt_t_1k) ^ 2
-
-total_brightness_1k = rowSums(received_1k)
-ngd_mcr_1k = rowSums(ngd_err_1k) / nspectra
-ols_mcr_1k = rowSums(ols_err_1k) / nspectra
-wols_mcr_1k = rowSums(wols_err_1k) / nspectra
-rnms_1k = rownames(received_1k)
-rnms_1k = sapply(strsplit(rnms_1k, split = '.', fixed = TRUE), function(x)
+rnms_small = rownames(small$received)
+rnms_small = sapply(strsplit(rnms_small, split = '.', fixed = TRUE), function(x)
   (x[1]))
-uq = unique(rnms_1k)
-occurs = Vectorize(grep, 'pattern')(paste0('^', uq, '$'), rnms_1k)
-cnts = as.vector(sapply(occurs, length))
-coords = c(0)
-for (i in 1:length(cnts))
+uq_small = unique(rnms_small)
+occurs_small = Vectorize(grep, 'pattern')(paste0('^', uq_small, '$'), rnms_small)
+cnts_small = as.vector(sapply(occurs_small, length))
+coords_small = c(0)
+for (i in 1:length(cnts_small))
 {
-  coords[i + 1] = sum(cnts[1:i])
+  coords_small[i + 1] = sum(cnts_small[1:i])
 }
-coords = coords[-length(coords)]
+coords_small = coords_small[-length(coords_small)]
 
-x = 1:nr_1k
+x = 1:small$n
 par(
   mfrow = c(3, 1),
   tcl = 0.5,
@@ -413,7 +475,7 @@ par(
 )
 plot(
   x,
-  ngd_mcr_1k,
+  small$ngd$mean_cell_err,
   pch = 16,
   cex = .1,
   ylim = c(0, 15),
@@ -423,9 +485,9 @@ plot(
   xaxt = 'n',
   yaxt = 'n'
 )
-lines(x, norm(total_brightness_1k) * 15 , col = alpha('green', 0.5))
+lines(x, norm(small$cell_brightness) * 15 , col = alpha('green', 0.5))
 legend(
-  round(nr_1k - 1 / 7 * nr_1k),
+  round(small$n - 1 / 7 * small$n),
   15,
   legend = c("Squared error", "Cell luminance"),
   col = c("red", "green"),
@@ -437,7 +499,7 @@ axis(2,
      gap.axis = 0)
 plot(
   x,
-  wols_mcr_1k,
+  small$wols$mean_cell_err,
   pch = 16,
   cex = .1,
   ylim = c(0, 15),
@@ -448,15 +510,15 @@ plot(
   xlab = '',
   yaxt = 'n'
 )
-lines(x, norm(total_brightness_1k) * 15 , col = alpha('green', 0.5))
+lines(x, norm(small$cell_brightness) * 15 , col = alpha('green', 0.5))
 text(
-  coords,
+  coords_small,
   par("usr")[3] + 15,
   srt = 90,
   adj = 1,
   xpd = TRUE,
-  labels = uq,
-  cex = 0.9
+  labels = uq_small,
+  cex = 1
 )
 axis(1,
      gap.axis = 1,
@@ -468,7 +530,7 @@ axis(2,
      gap.axis = 0)
 plot(
   x,
-  ols_mcr_1k,
+  small$ols$mean_cell_err,
   pch = 16,
   cex = .1,
   ylim = c(0, 15),
@@ -478,7 +540,86 @@ plot(
   xaxt = 'n',
   yaxt = 'n'
 )
-lines(x, norm(total_brightness_1k) * 15 , col = alpha('green', 0.5))
+lines(x, norm(small$cell_brightness) * 15 , col = alpha('green', 0.5))
+axis(2,
+     at = seq(0, 15, 2),
+     labels = T,
+     gap.axis = 0)
+
+par(
+  mfrow = c(3, 1),
+  tcl = 0.5,
+  mgp = c(0, -1.4, 0),
+  mar = c(0, 0, 1.5, 0)
+)
+plot(
+  x,
+  small$zeroclamp_ngd$mean_cell_err,
+  pch = 16,
+  cex = .1,
+  ylim = c(0, 15),
+  main = 'NOUGAD',
+  type = 'l',
+  col = 'red',
+  xaxt = 'n',
+  yaxt = 'n'
+)
+lines(x, norm(small$cell_brightness) * 15 , col = alpha('green', 0.5))
+legend(
+  round(small$n - 1 / 7 * small$n),
+  15,
+  legend = c("Squared error", "Cell luminance"),
+  col = c("red", "green"),
+  lty = 1:2
+)
+axis(2,
+     at = seq(0, 15, 2),
+     labels = T,
+     gap.axis = 0)
+plot(
+  x,
+  small$zeroclamp_wols$mean_cell_err,
+  pch = 16,
+  cex = .1,
+  ylim = c(0, 15),
+  main = 'WOLS',
+  type = 'l',
+  col = 'red',
+  xaxt = 'n',
+  xlab = '',
+  yaxt = 'n'
+)
+lines(x, norm(small$cell_brightness) * 15 , col = alpha('green', 0.5))
+text(
+  coords_small,
+  par("usr")[3] + 15,
+  srt = 90,
+  adj = 1,
+  xpd = TRUE,
+  labels = uq_small,
+  cex = 1
+)
+axis(1,
+     gap.axis = 1,
+     padj = 0.5,
+     xaxt = 'n')
+axis(2,
+     at = seq(0, 15, 2),
+     labels = T,
+     gap.axis = 0)
+plot(
+  x,
+  small$zeroclamp_ols$mean_cell_err,
+  pch = 16,
+  cex = .1,
+  ylim = c(0, 15),
+  main = 'OLS',
+  type = 'l',
+  col = 'red',
+  xaxt = 'n',
+  yaxt = 'n'
+)
+lines(x, norm(small$cell_brightness) * 15 , col = alpha('green', 0.5))
 axis(2,
      at = seq(0, 15, 2),
      labels = T,
@@ -488,39 +629,18 @@ axis(2,
 Correlation of mean per cell error with total cell brightness:
 
 ```{r errcor_cell}
-ngd_err = (ngd_t - gt_t) ^ 2
-ols_err = (ols_t - gt_t) ^ 2
-wols_err = (wols_t - gt_t) ^ 2
+cn = cor.test(big$cell_brightness, big$ngd$mean_cell_err)
+co = cor.test(big$cell_brightness, big$ols$mean_cell_err)
+cw = cor.test(big$cell_brightness, big$wols$mean_cell_err)
 
-total_brightness = rowSums(received)
-ngd_mcr = rowSums(ngd_err) / nspectra
-ols_mcr = rowSums(ols_err) / nspectra
-wols_mcr = rowSums(wols_err) / nspectra
-
-df_ngd = data.frame(
-  cell_brightness = norm(total_brightness),
-  mean_cell_error = norm(ngd_mcr)
-)
-df_ngd = df_ngd[order(df_ngd$mean_cell_error),]
-df_ols = data.frame(
-  cell_brightness = norm(total_brightness),
-  mean_cell_error = norm(ols_mcr)
-)
-df_ols = df_ols[order(df_ols$mean_cell_error),]
-df_wols = data.frame(
-  cell_brightness = norm(total_brightness),
-  mean_cell_error = norm(wols_mcr)
-)
-df_wols = df_wols[order(df_wols$mean_cell_error),]
-
-cn = cor.test(df_ngd$cell_brightness, df_ngd$mean_cell_error)
-co = cor.test(df_ols$cell_brightness, df_ols$mean_cell_error)
-cw = cor.test(df_wols$cell_brightness, df_wols$mean_cell_error)
+cnc = cor.test(big$cell_brightness, big$zeroclamp_ngd$mean_cell_err)
+coc = cor.test(big$cell_brightness, big$zeroclamp_ols$mean_cell_err)
+cwc = cor.test(big$cell_brightness, big$zeroclamp_wols$mean_cell_err)
 
 par(mar = c(0, 0, 3, 0), mfrow = c(1, 3))
 plot(
-  df_ngd$cell_brightness,
-  df_ngd$mean_cell_error,
+  norm(big$cell_brightness),
+  norm(big$ngd$mean_cell_err),
   pch = 16,
   cex = .1,
   main = paste0(
@@ -538,8 +658,8 @@ plot(
 )
 abline(0, 1, col = 'red')
 plot(
-  df_wols$cell_brightness,
-  df_wols$mean_cell_error,
+  norm(big$cell_brightness),
+  norm(big$wols$mean_cell_err),
   pch = 16,
   cex = .1,
   main = paste0(
@@ -557,8 +677,8 @@ plot(
 )
 abline(0, 1, col = 'red')
 plot(
-  df_ols$cell_brightness,
-  df_ols$mean_cell_error,
+  norm(big$cell_brightness),
+  norm(big$ols$mean_cell_err),
   pch = 16,
   cex = .1,
   main = paste0(
@@ -575,22 +695,83 @@ plot(
   yaxt = 'n'
 )
 abline(0, 1, col = 'red')
+
+par(mar = c(0, 0, 3, 0), mfrow = c(1, 3))
+plot(
+  norm(big$cell_brightness),
+  norm(big$zeroclamp_ngd$mean_cell_err),
+  pch = 16,
+  cex = .1,
+  main = paste0(
+    '0 clamped NOUGAD r=',
+    round(cnc$estimate, 3),
+    '\n95CI=(',
+    round(cnc$conf.int[1], 2),
+    ';',
+    round(cnc$conf.int[2], 2),
+    ') p',
+    format.pval(cnc$p.value)
+  ),
+  xaxt = 'n',
+  yaxt = 'n'
+)
+abline(0, 1, col = 'red')
+plot(
+  norm(big$cell_brightness),
+  norm(big$zeroclamp_wols$mean_cell_err),
+  pch = 16,
+  cex = .1,
+  main = paste0(
+    '0 clamped WOLS r=',
+    round(cwc$estimate, 3),
+    '\n95CI=(',
+    round(cwc$conf.int[1], 2),
+    ';',
+    round(cwc$conf.int[2], 2),
+    ') p',
+    format.pval(cwc$p.value)
+  ),
+  xaxt = 'n',
+  yaxt = 'n'
+)
+abline(0, 1, col = 'red')
+plot(
+  norm(big$cell_brightness),
+  norm(big$zeroclamp_ols$mean_cell_err),
+  pch = 16,
+  cex = .1,
+  main = paste0(
+    '0 clamped OLS r=',
+    round(coc$estimate, 3),
+    '\n95CI=(',
+    round(coc$conf.int[1], 2),
+    ';',
+    round(coc$conf.int[2], 2),
+    ') p',
+    format.pval(coc$p.value)
+  ),
+  xaxt = 'n',
+  yaxt = 'n'
+)
+abline(0, 1, col = 'red')
 ```
 
 3. Compare error distribution over different spectra for different methods
 This should serve to look at which spectra are more prone to errors and how/if the error distribution for each spectrum changes depending on the selected method.
 Note that counts (Y axis) are log scaled.
 
+For unclamped methods.
+
 ```{r errdist_spec}
 spec_int = norm(rowSums(spectra) ^ 2) #Total energy of the given spectrum
-mean_ag_expr = norm(colSums(gt) / nspectra)#Mean expression of that spectrum in the data (ground truth)
+mean_ag_expr = norm(colSums(big$gt_trans) / nspectra)#Mean expression of that spectrum in the data (ground truth)
 colvec <- colorRampPalette(c("green", "yellow", "red"))
 cvc = c(colvec(10), rep('red', 10))
 for (i in 1:nspectra) {
   par(mar = c(0, 2, 2, 0), mfrow = c(1, 3))
-  ols_vec = ols_err[, i]
-  wols_vec = wols_err[, i]
-  ngd_vec = ngd_err[, i]
+  ols_vec = big$ols$sq_err[, i]
+  wols_vec = big$wols$sq_err[, i]
+  ngd_vec = big$ngd$sq_err[, i]
   xmx = max(c(max(ols_vec), max(wols_vec), max(ngd_vec)))
   h_ols =
     hist(ols_vec,
@@ -655,6 +836,81 @@ for (i in 1:nspectra) {
     ylim = c(0, ymx),
     yaxt = 'n'
   )
+}
+```
+
+For clamped methods.
+
+```{r errdist_spec_clp}
+for (i in 1:nspectra) {
+  par(mar = c(0, 2, 2, 0), mfrow = c(1, 3))
+  ols_vec = big$zeroclamp_ols$sq_err[, i]
+  wols_vec = big$zeroclamp_wols$sq_err[, i]
+  ngd_vec = big$zeroclamp_ngd$sq_err[, i]
+  xmx = max(c(max(ols_vec), max(wols_vec), max(ngd_vec)))
+  h_ols =
+    hist(ols_vec,
+         plot = FALSE,
+         breaks = seq(0, xmx, length.out = 20))
+  h_ols$counts = log(h_ols$counts)
+  h_ols$counts[h_ols$counts == -Inf] = 0
+  h_wols =
+    hist(wols_vec,
+         plot = FALSE,
+         breaks = seq(0, xmx, length.out = 20))
+  h_wols$counts = log(h_wols$counts)
+  h_wols$counts[h_wols$counts == -Inf] = 0
+  h_ngd =
+    hist(ngd_vec,
+         plot = FALSE,
+         breaks = seq(0, xmx, length.out = 20))
+  h_ngd$counts = log(h_ngd$counts)
+  h_ngd$counts[h_ngd$counts == -Inf] = 0
+  ymx = max(c(max(h_ols$counts), max(h_wols$counts), max(h_ngd$counts)))
+  plot(
+    h_ngd,
+    col = cvc,
+    main = paste0(
+      spec_names[i],
+      ' 0 clamp NGD\n E=',
+      round(spec_int[i], 3),
+      ' M(Ex)=',
+      round(mean_ag_expr[i], 3)
+    ),
+    xaxt = 'n',
+    xlim = c(0, xmx),
+    ylim = c(0, ymx)
+  )
+  plot(
+    h_wols,
+    col = cvc,
+    main = paste0(
+      spec_names[i],
+      ' 0 clamp WOLS\n E=',
+      round(spec_int[i], 3),
+      ' M(Ex)=',
+      round(mean_ag_expr[i], 3)
+    ),
+    xaxt = 'n',
+    xlim = c(0, xmx),
+    ylim = c(0, ymx),
+    yaxt = 'n'
+  )
+  plot(
+    h_ols,
+    col = cvc,
+    main = paste0(
+      spec_names[i],
+      ' 0 clamp OLS\n E=',
+      round(spec_int[i], 3),
+      ' M(Ex)r=',
+      round(mean_ag_expr[i], 3)
+    ),
+    xaxt = 'n',
+    xlim = c(0, xmx),
+    ylim = c(0, ymx),
+    yaxt = 'n'
+  )
   
 }
 ```
@@ -662,28 +918,18 @@ for (i in 1:nspectra) {
 Correlation of mean spectrum error with the spectrum energy.
 
 ```{r errcor_spec}
-ngd_msr = colSums(ngd_err) / nr
-ols_msr = colSums(ols_err) / nr
-wols_msr = colSums(wols_err) / nr
+cn = cor.test(big$ngd$mean_spec_err, spec_int)
+co = cor.test(big$ols$mean_spec_err, spec_int)
+cw = cor.test(big$wols$mean_spec_err, spec_int)
 
-df_ngd = data.frame(spectrum_energy = norm(spec_int),
-                    mean_spectrum_error = norm(ngd_msr))
-df_ngd = df_ngd[order(df_ngd$mean_spectrum_error),]
-df_ols = data.frame(spectrum_energy = norm(spec_int),
-                    mean_spectrum_error = norm(ols_msr))
-df_ols = df_ols[order(df_ols$mean_spectrum_error),]
-df_wols = data.frame(spectrum_energy = norm(spec_int),
-                     mean_spectrum_error = norm(wols_msr))
-df_wols = df_wols[order(df_wols$mean_spectrum_error),]
-
-cn = cor.test(ngd_msr, spec_int)
-co = cor.test(ols_msr, spec_int)
-cw = cor.test(wols_msr, spec_int)
+cnc = cor.test(big$zeroclamp_ngd$mean_spec_err, spec_int)
+coc = cor.test(big$zeroclamp_ols$mean_spec_err, spec_int)
+cwc = cor.test(big$zeroclamp_wols$mean_spec_err, spec_int)
 
 par(mar = c(0, 0, 3, 0), mfrow = c(1, 3))
 plot(
-  df_ngd$spectrum_energy,
-  df_ngd$mean_spectrum_error,
+  norm(spec_int),
+  norm(big$ngd$mean_spec_err),
   pch = 16,
   cex = .1,
   main = paste0(
@@ -701,8 +947,8 @@ plot(
 )
 abline(0, 1, col = 'red')
 plot(
-  df_wols$spectrum_energy,
-  df_wols$mean_spectrum_error,
+  norm(spec_int),
+  norm(big$wols$mean_spec_err),
   pch = 16,
   cex = .1,
   main = paste0(
@@ -720,8 +966,8 @@ plot(
 )
 abline(0, 1, col = 'red')
 plot(
-  df_ols$spectrum_energy,
-  df_ols$mean_spectrum_error,
+  norm(spec_int),
+  norm(big$ols$mean_spec_err),
   pch = 16,
   cex = .1,
   main = paste0(
@@ -738,6 +984,65 @@ plot(
   yaxt = 'n'
 )
 abline(0, 1, col = 'red')
+
+par(mar = c(0, 0, 3, 0), mfrow = c(1, 3))
+plot(
+  norm(spec_int),
+  norm(big$zeroclamp_ngd$mean_spec_err),
+  pch = 16,
+  cex = .1,
+  main = paste0(
+    'NOUGAD r=',
+    round(cnc$estimate, 3),
+    ' \n95CI=(',
+    round(cnc$conf.int[1], 2),
+    ';',
+    round(cnc$conf.int[2], 2),
+    ') p=',
+    format.pval(cnc$p.value)
+  ),
+  xaxt = 'n',
+  yaxt = 'n'
+)
+abline(0, 1, col = 'red')
+plot(
+  norm(spec_int),
+  norm(big$zeroclamp_wols$mean_spec_err),
+  pch = 16,
+  cex = .1,
+  main = paste0(
+    'WOLS r=',
+    round(cwc$estimate, 3),
+    ' \n95CI=(',
+    round(cwc$conf.int[1], 2),
+    ';',
+    round(cwc$conf.int[2], 2),
+    ') p=',
+    format.pval(cwc$p.value)
+  ),
+  xaxt = 'n',
+  yaxt = 'n'
+)
+abline(0, 1, col = 'red')
+plot(
+  norm(spec_int),
+  norm(big$zeroclamp_ols$mean_spec_err),
+  pch = 16,
+  cex = .1,
+  main = paste0(
+    'OLS r=',
+    round(coc$estimate, 3),
+    ' \n95CI=(',
+    round(coc$conf.int[1], 2),
+    ';',
+    round(coc$conf.int[2], 2),
+    ') p=',
+    format.pval(coc$p.value)
+  ),
+  xaxt = 'n',
+  yaxt = 'n'
+)
+abline(0, 1, col = 'red')
 ```
 
 ## Visually compare unmixed cells to ground truth in 2D space
@@ -747,77 +1052,95 @@ abline(0, 1, col = 'red')
 Using lines.
 
 ```{r lines_pairs}
-colnames(gt_t_1k) = spec_names
-colnames(ngd_t_1k) = spec_names
-colnames(ols_t_1k) = spec_names
-colnames(wols_t_1k) = spec_names
-
-ngd_t_1k = as.data.frame(ngd_t_1k)
-gt_t_1k = as.data.frame(gt_t_1k)
-ols_t_1k = as.data.frame(ols_t_1k)
-wols_t_1k = as.data.frame(wols_t_1k)
-
 marker_cords = which(mean_ag_expr > 0.3)
 markers = spec_names[marker_cords]
 markers = markers[markers != 'Autofluorescence']
 combos = combn(markers, 2)
 for (i in 1:ncol(combos)) {
-  df_ngd = data.frame(
-    X1 = gt_t_1k[combos[1, i]][, 1],
-    X2 = gt_t_1k[combos[2, i]][, 1],
-    X1.1 = ngd_t_1k[combos[1, i]][, 1],
-    X2.1 = ngd_t_1k[combos[2, i]][, 1]
-  )
-  df_ols = data.frame(
-    X1 = gt_t_1k[combos[1, i]][, 1],
-    X2 = gt_t_1k[combos[2, i]][, 1],
-    X1.1 = ols_t_1k[combos[1, i]][, 1],
-    X2.1 = ols_t_1k[combos[2, i]][, 1]
-  )
-  df_wols = data.frame(
-    X1 = gt_t_1k[combos[1, i]][, 1],
-    X2 = gt_t_1k[combos[2, i]][, 1],
-    X1.1 = wols_t_1k[combos[1, i]][, 1],
-    X2.1 = wols_t_1k[combos[2, i]][, 1]
-  )
-  
   p1 = ggplot()  + geom_segment(
-    data = df_ngd,
     aes(
-      x = X1,
-      y = X2,
-      xend = X1.1,
-      yend = X2.1
+      x = small$gt_trans[combos[1, i]][, 1],
+      y = small$gt_trans[combos[2, i]][, 1],
+      xend = small$ngd$unmix_trans[combos[1, i]][, 1],
+      yend = small$ngd$unmix_trans[combos[2, i]][, 1]
     ),
     colour = "red",
     alpha = 0.5
-  ) + geom_point(aes(x = df_ngd$X1, y = df_ngd$X2),
+  ) + geom_point(aes(x = small$gt_trans[combos[1, i]][, 1], y = small$gt_trans[combos[2, i]][, 1]),
                  size = 0.5,
                  alpha = 0.3) + theme_cowplot() + ylab(combos[2, i]) + xlab('') + ggtitle('NGD')
   p2 = ggplot()  + geom_segment(
-    data = df_wols,
     aes(
-      x = X1,
-      y = X2,
-      xend = X1.1,
-      yend = X2.1
+      x = small$gt_trans[combos[1, i]][, 1],
+      y = small$gt_trans[combos[2, i]][, 1],
+      xend = small$wols$unmix_trans[combos[1, i]][, 1],
+      yend = small$wols$unmix_trans[combos[2, i]][, 1]
     ),
     colour = "red",
     alpha = 0.5
-  ) + geom_point(aes(x = df_ngd$X1, y = df_ngd$X2),
+  ) + geom_point(aes(x = small$gt_trans[combos[1, i]][, 1], y = small$gt_trans[combos[2, i]][, 1]),
                  size = 0.5,
                  alpha = 0.3) + theme_cowplot() + ylab('') + xlab(combos[1, i]) + ggtitle('WOLS')
   p3 = ggplot()  + geom_segment(
-    data = df_ols,
     aes(
-      x = X1,
-      y = X2,
-      xend = X1.1,
-      yend = X2.1
+      x = small$gt_trans[combos[1, i]][, 1],
+      y = small$gt_trans[combos[2, i]][, 1],
+      xend = small$ols$unmix_trans[combos[1, i]][, 1],
+      yend = small$ols$unmix_trans[combos[2, i]][, 1]
     ),
     colour = "red",
     alpha = 0.5
-  ) + geom_point(aes(x = df_ngd$X1, y = df_ngd$X2),
+  ) + geom_point(aes(x = small$gt_trans[combos[1, i]][, 1], y = small$gt_trans[combos[2, i]][, 1]),
+                 size = 0.5,
+                 alpha = 0.3) + theme_cowplot() + ylab('') + xlab('') + ggtitle('OLS')
+  
+  print(ggarrange(p1, p2, p3, ncol = 3))
+  
+}
+```
+
+Clipped.
+
+```{r lines_pairs_clp}
+ngd_t_1k = as.data.frame(small$zeroclamp_ngd$unmix_trans)
+ols_t_1k = as.data.frame(small$zeroclamp_ols$unmix_trans)
+wols_t_1k = as.data.frame(small$zeroclamp_wols$unmix_trans)
+
+for (i in 1:ncol(combos)) {
+  p1 = ggplot()  + geom_segment(
+    aes(
+      x = small$gt_trans[combos[1, i]][, 1],
+      y = small$gt_trans[combos[2, i]][, 1],
+      xend = small$zeroclamp_ngd$unmix_trans[combos[1, i]][, 1],
+      yend = small$zeroclamp_ngd$unmix_trans[combos[2, i]][, 1]
+    ),
+    colour = "red",
+    alpha = 0.5
+  ) + geom_point(aes(x = small$gt_trans[combos[1, i]][, 1], y = small$gt_trans[combos[2, i]][, 1]),
+                 size = 0.5,
+                 alpha = 0.3) + theme_cowplot() + ylab(combos[2, i]) + xlab('') + ggtitle('NGD')
+  p2 = ggplot()  + geom_segment(
+    aes(
+      x = small$gt_trans[combos[1, i]][, 1],
+      y = small$gt_trans[combos[2, i]][, 1],
+      xend = small$zeroclamp_wols$unmix_trans[combos[1, i]][, 1],
+      yend = small$zeroclamp_wols$unmix_trans[combos[2, i]][, 1]
+    ),
+    colour = "red",
+    alpha = 0.5
+  ) + geom_point(aes(x = small$gt_trans[combos[1, i]][, 1], y = small$gt_trans[combos[2, i]][, 1]),
+                 size = 0.5,
+                 alpha = 0.3) + theme_cowplot() + ylab('') + xlab(combos[1, i]) + ggtitle('WOLS')
+  p3 = ggplot()  + geom_segment(
+    aes(
+      x = small$gt_trans[combos[1, i]][, 1],
+      y = small$gt_trans[combos[2, i]][, 1],
+      xend = small$zeroclamp_ols$unmix_trans[combos[1, i]][, 1],
+      yend = small$zeroclamp_ols$unmix_trans[combos[2, i]][, 1]
+    ),
+    colour = "red",
+    alpha = 0.5
+  ) + geom_point(aes(x = small$gt_trans[combos[1, i]][, 1], y = small$gt_trans[combos[2, i]][, 1]),
                  size = 0.5,
                  alpha = 0.3) + theme_cowplot() + ylab('') + xlab('') + ggtitle('OLS')
   
@@ -828,42 +1151,25 @@ for (i in 1:ncol(combos)) {
 
 Color cells by squared error magnitude.
 
-```{r errcolor_pairs}
-colnames(gt_t) = spec_names
-colnames(ngd_t) = spec_names
-colnames(ols_t) = spec_names
-colnames(wols_t) = spec_names
-
-ngd_t = as.data.frame(ngd_t)
-gt_t = as.data.frame(gt_t)
-ols_t = as.data.frame(ols_t)
-wols_t = as.data.frame(wols_t)
-
-
-ngd_err = as.data.frame(ngd_err)
-colnames(ngd_err) = spec_names
-ols_err = as.data.frame(ols_err)
-colnames(ols_err) = spec_names
-wols_err = as.data.frame(wols_err)
-colnames(wols_err) = spec_names
+```{r errcolor_pairs} 
 for (i in 1:ncol(combos)) {
-  aes_engd = rowSums(ngd_err[, c(combos[1, i], combos[2, i])]) / 2
-  aes_eols = rowSums(ols_err[, c(combos[1, i], combos[2, i])]) / 2
-  aes_ewols = rowSums(wols_err[, c(combos[1, i], combos[2, i])]) / 2
+  aes_engd = rowSums(med$ngd$sq_err[, c(combos[1, i], combos[2, i])]) / 2
+  aes_eols = rowSums(med$ols$sq_err[, c(combos[1, i], combos[2, i])]) / 2
+  aes_ewols = rowSums(med$wols$sq_err[, c(combos[1, i], combos[2, i])]) / 2
   mx = max(c(max(aes_engd), max(aes_eols), max(aes_ewols)))
-  x_gt = gt_t[combos[1, i]][, 1]
-  y_gt = gt_t[combos[2, i]][, 1]
-  x_ngd = ngd_t[combos[1, i]][, 1]
-  y_ngd = ngd_t[combos[2, i]][, 1]
-  x_ols = ols_t[combos[1, i]][, 1]
-  y_ols = ols_t[combos[2, i]][, 1]
-  x_wols = wols_t[combos[1, i]][, 1]
-  y_wols = wols_t[combos[2, i]][, 1]
+  x_gt = med$gt_trans[combos[1, i]][, 1]
+  y_gt = med$gt_trans[combos[2, i]][, 1]
+  x_ngd = med$ngd$unmix_trans[combos[1, i]][, 1]
+  y_ngd = med$ngd$unmix_trans[combos[2, i]][, 1]
+  x_ols = med$ols$unmix_trans[combos[1, i]][, 1]
+  y_ols = med$ols$unmix_trans[combos[2, i]][, 1]
+  x_wols = med$wols$unmix_trans[combos[1, i]][, 1]
+  y_wols = med$wols$unmix_trans[combos[2, i]][, 1]
   mx_x = max(c(max(x_ols), max(x_wols), max(x_ngd), max(x_gt)))
   mx_y = max(c(max(y_ols), max(y_wols), max(y_ngd), max(y_gt)))
   mn_x = min(c(min(x_ols), min(x_wols), min(x_ngd), min(x_gt)))
   mn_y = min(c(min(y_ols), min(y_wols), min(y_ngd), min(y_gt)))
-  Error = rep(0, nr)
+  Error = rep(0, med$n)
   
   p1 = qplot() + geom_point(aes(x_gt, y_gt, colour = Error),
                             size = 1,
@@ -927,31 +1233,100 @@ for (i in 1:ncol(combos)) {
 }
 ```
 
-2. Compare points across all markers embedded and visualized in 2D using self-organizing map from EmbedSOM library
+For clamped methods.
 
-Color embedded cells based on their type from ground truth. 
-
-```{r ctypes_esom}
-map = SOM(gt_t, xdim = 20, ydim = 20)
-e_gt = EmbedSOM(gt_t, map)
-e_ngd = EmbedSOM(ngd_t, map)
-e_ols = EmbedSOM(ols_t, map)
-e_wols = EmbedSOM(wols_t, map)
-
-rnms = sapply(strsplit(rownames(received), split = '.', fixed = TRUE), function(x)
-  (x[1]))
-uq = unique(rnms)
-distinct20=c('#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080', '#ffffff', '#000000')
-qplot() + geom_point(aes(e_gt[, 1], e_gt[, 2], colour = rnms),
-                          size = 1,
-                          alpha = 0.5)  + ggtitle('Ground Truth') + theme_cowplot() +
-  ylab('') + xlab('') + theme_void()+scale_color_manual(breaks = uq,values = distinct20)+guides(color=guide_legend(ncol=2,title="Cell type"))
+```{r errcolor_pairs_clamp} 
+for (i in 1:ncol(combos)) {
+  aes_engd = rowSums(med$zeroclamp_ngd$sq_err[, c(combos[1, i], combos[2, i])]) / 2
+  aes_eols = rowSums(med$zeroclamp_ols$sq_err[, c(combos[1, i], combos[2, i])]) / 2
+  aes_ewols = rowSums(med$zeroclamp_wols$sq_err[, c(combos[1, i], combos[2, i])]) / 2
+  mx = max(c(max(aes_engd), max(aes_eols), max(aes_ewols)))
+  x_gt = med$gt_trans[combos[1, i]][, 1]
+  y_gt = med$gt_trans[combos[2, i]][, 1]
+  x_ngd = med$zeroclamp_ngd$unmix_trans[combos[1, i]][, 1]
+  y_ngd = med$zeroclamp_ngd$unmix_trans[combos[2, i]][, 1]
+  x_ols = med$zeroclamp_ols$unmix_trans[combos[1, i]][, 1]
+  y_ols = med$zeroclamp_ols$unmix_trans[combos[2, i]][, 1]
+  x_wols = med$zeroclamp_wols$unmix_trans[combos[1, i]][, 1]
+  y_wols = med$zeroclamp_wols$unmix_trans[combos[2, i]][, 1]
+  mx_x = max(c(max(x_ols), max(x_wols), max(x_ngd), max(x_gt)))
+  mx_y = max(c(max(y_ols), max(y_wols), max(y_ngd), max(y_gt)))
+  mn_x = min(c(min(x_ols), min(x_wols), min(x_ngd), min(x_gt)))
+  mn_y = min(c(min(y_ols), min(y_wols), min(y_ngd), min(y_gt)))
+  Error = rep(0, med$n)
+  
+  p1 = qplot() + geom_point(aes(x_gt, y_gt, colour = Error),
+                            size = 1,
+                            alpha = 0.5) + scale_colour_gradientn(
+                              limits = c(0, mx),
+                              trans = 'pseudo_log',
+                              colours = c("blue", "yellow", "red"),
+                              labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
+                              breaks = c(0, 2, 5, 10, 20, 40, 60)
+                            ) + ggtitle('Ground Truth') + theme_cowplot() +
+    ylab('') + xlab('') + scale_x_continuous(limits = c(mn_x, mx_x)) + scale_y_continuous(limits = c(mn_y, mx_y)) +
+    theme_void()
+  p2 = qplot() + geom_point(aes(x_ngd, y_ngd, colour = aes_engd),
+                            size = 1,
+                            alpha = 0.5) + scale_colour_gradientn(
+                              limits = c(0, mx),
+                              trans = 'pseudo_log',
+                              colours = c("blue", "yellow", "red"),
+                              labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
+                              breaks = c(0, 2, 5, 10, 20, 40, 60)
+                            ) + ggtitle('0 clamped NGD') + theme_cowplot() +
+    ylab('') + xlab('') + scale_x_continuous(limits = c(mn_x, mx_x)) + scale_y_continuous(limits = c(mn_y, mx_y)) +
+    theme_void()
+  p3 = qplot() + geom_point(aes(x_wols, y_wols, colour = aes_ewols),
+                            size = 1,
+                            alpha = 0.5) + scale_colour_gradientn(
+                              limits = c(0, mx),
+                              trans = 'pseudo_log',
+                              colours = c("blue", "yellow", "red"),
+                              labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
+                              breaks = c(0, 2, 5, 10, 20, 40, 60)
+                            ) + ggtitle('0 clamped WOLS') + theme_cowplot() +
+    ylab(combos[2, i]) + xlab(combos[1, i]) + scale_x_continuous(limits = c(mn_x, mx_x)) +
+    scale_y_continuous(limits = c(mn_y, mx_y)) + theme_void()
+  p4 = qplot() + geom_point(aes(x_ols, y_ols, colour = aes_eols),
+                            size = 1,
+                            alpha = 0.5) + scale_colour_gradientn(
+                              limits = c(0, mx),
+                              trans = 'pseudo_log',
+                              colours = c("blue", "yellow", "red"),
+                              labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
+                              breaks = c(0, 2, 5, 10, 20, 40, 60)
+                            ) + ggtitle('0 clamped OLS') + theme_cowplot() +
+    ylab('') + xlab('') + scale_x_continuous(limits = c(mn_x, mx_x)) + scale_y_continuous(limits = c(mn_y, mx_y)) +
+    theme_void()
+  figure = ggarrange(
+    p1,
+    p2,
+    p3,
+    p4,
+    ncol = 2,
+    nrow = 2,
+    common.legend = T,
+    legend = 'right'
+  ) + theme(plot.background = element_rect())
+  print(annotate_figure(
+    figure,
+    left = text_grob(combos[2, i], rot = 90),
+    bottom = text_grob(paste0(combos[1, i], '\n', '\n'))
+  ))
+}
 ```
+
+2. Compare points across all markers embedded and visualized in 2D using self-organizing map from EmbedSOM library
 
 Using lines.
 
 ```{r lines_esom}
-
+map = SOM(small$gt_trans, xdim = 20, ydim = 20)
+e_gt = EmbedSOM(small$gt_trans, map)
+e_ngd = EmbedSOM(small$ngd$unmix_trans, map)
+e_ols = EmbedSOM(small$ols$unmix_trans, map)
+e_wols = EmbedSOM(small$wols$unmix_trans, map)
 p1 = ggplot()  + geom_segment(
   aes(
     x = e_gt[, 1],
@@ -993,50 +1368,151 @@ p3
 ggarrange(p1, p2, p3, ncol = 3)
 ```
 
+For clamped methods.
+
+```{r lines_esom_clamp}
+map = SOM(small$gt_trans, xdim = 20, ydim = 20)
+e_gt = EmbedSOM(small$gt_trans, map)
+e_ngd = EmbedSOM(small$zeroclamp_ngd$unmix_trans, map)
+e_ols = EmbedSOM(small$zeroclamp_ols$unmix_trans, map)
+e_wols = EmbedSOM(small$zeroclamp_wols$unmix_trans, map)
+p1 = ggplot()  + geom_segment(
+  aes(
+    x = e_gt[, 1],
+    y = e_gt[, 2],
+    xend = e_ngd[, 1],
+    yend = e_ngd[, 2]
+  ),
+  colour = "red",
+  alpha = 0.3
+) + geom_point(aes(x = e_gt[, 1], y = e_gt[, 2]), size = 0.4, alpha = 0.3) +
+  ggtitle('0 clamped NGD') + scale_x_discrete(labels = NULL, breaks = NULL) + labs(x = '', y =
+                                                                                     '') + scale_y_discrete(labels = NULL, breaks = NULL) + theme_void()
+p2 = ggplot()  + geom_segment(
+  aes(
+    x = e_gt[, 1],
+    y = e_gt[, 2],
+    xend = e_wols[, 1],
+    yend = e_wols[, 2]
+  ),
+  colour = "red",
+  alpha = 0.3
+) + geom_point(aes(x = e_gt[, 1], y = e_gt[, 2]), size = 0.5, alpha = 0.4) +
+  ggtitle('0 clamped WOLS') + scale_x_discrete(labels = NULL, breaks = NULL) + labs(x = '', y =
+                                                                                      '') + scale_y_discrete(labels = NULL, breaks = NULL) + theme_void()
+p3 = ggplot()  + geom_segment(aes(
+  e_gt[, 1],
+  y = e_gt[, 2],
+  xend = e_ols[, 1],
+  yend = e_ols[, 2]
+),
+colour = "red",
+alpha = 0.3) + geom_point(aes(x = e_gt[, 1], y = e_gt[, 2]), size = 0.5, alpha =
+                            0.4) + ggtitle('0 clamped OLS') + scale_x_discrete(labels = NULL, breaks = NULL) + labs(x = '', y =
+                                                                                                                      '') + scale_y_discrete(labels = NULL, breaks = NULL) + theme_void()
+
+p1
+p2
+p3
+ggarrange(p1, p2, p3, ncol = 3)
+```
+
+Color SOM by cell type.
+
+```{r ctypes_esom}
+map = EmbedSOM::RandomMap(big$gt_trans, 1000, coords = EmbedSOM::UMAPCoords())
+e_gt = EmbedSOM(big$gt_trans, map, parallel = T)
+e_ngd = EmbedSOM(big$ngd$unmix_trans, map, parallel = T)
+e_ols = EmbedSOM(big$ols$unmix_trans, map, parallel = T)
+e_wols = EmbedSOM(big$wols$unmix_trans, map, parallel = T)
+
+rnms = sapply(strsplit(rownames(big$received), split = '.', fixed = TRUE), function(x)
+  (x[1]))
+uq = unique(rnms)
+dead_subtypes = uq[grepl('dead', uq, fixed = T)]
+rnms[rnms %in% dead_subtypes] = 'dead'
+uq = unique(rnms)
+distinct11 = c(
+  '#a6cee3',
+  '#1f78b4',
+  '#b2df8a',
+  '#33a02c',
+  '#fb9a99',
+  '#e31a1c',
+  '#ff7f00',
+  '#cab2d6',
+  '#6a3d9a',
+  '#ffff99',
+  'black'
+)
+qplot() + geom_point(aes(e_gt[, 1], e_gt[, 2], colour = rnms),
+                     size = 0.4,
+                     alpha = 0.6)  + ggtitle('Ground Truth') + theme_cowplot() +
+  ylab('') + xlab('') + theme_void() + scale_color_manual(breaks = uq, values = distinct11) +
+  guides(color = guide_legend(
+    ncol = 2,
+    title = "Cell type",
+    override.aes = list(size = 5)
+  ))
+```
 
 Color points by per-cell mean squared error.
 
 ```{r errcolor_esom}
-Error = rep(0, nr)
+e_ngd = EmbedSOM(big$ngd$unmix_trans, map, parallel = T)
+e_ols = EmbedSOM(big$ols$unmix_trans, map, parallel = T)
+e_wols = EmbedSOM(big$wols$unmix_trans, map, parallel = T)
+mx = max(c(
+  big$ngd$mean_cell_err,
+  big$wols$mean_cell_err,
+  big$ols$mean_cell_err
+))
+Error = rep(0, big$n)
 p1 = qplot() + geom_point(aes(e_gt[, 1], e_gt[, 2], colour = Error),
-                          size = 1,
+                          size = 0.4,
                           alpha = 0.5) + scale_colour_gradientn(
                             limits = c(0, mx),
                             trans = 'pseudo_log',
                             colours = c("blue", "yellow", "red"),
-                            labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
-                            breaks = c(0, 2, 5, 10, 20, 40, 60)
+                            labels = c(' 0', ' 2', ' 5', '10 ', '20 '),
+                            breaks = c(0, 2, 5, 10, 20)
                           ) + ggtitle('Ground Truth') + theme_cowplot() +
   ylab('') + xlab('') + theme_void()
-p2 = qplot() + geom_point(aes(e_ngd[, 1], e_ngd[, 2], colour = unname(ngd_mcr)),
-                          size = 1,
-                          alpha = 0.5) + scale_colour_gradientn(
-                            limits = c(0, mx),
-                            trans = 'pseudo_log',
-                            colours = c("blue", "yellow", "red"),
-                            labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
-                            breaks = c(0, 2, 5, 10, 20, 40, 60)
-                          ) + ggtitle('NGD') + theme_cowplot() +
+p2 = qplot() + geom_point(
+  aes(e_ngd[, 1], e_ngd[, 2], colour = big$ngd$mean_cell_err),
+  size = 0.4,
+  alpha = 0.5
+) + scale_colour_gradientn(
+  limits = c(0, mx),
+  trans = 'pseudo_log',
+  colours = c("blue", "yellow", "red"),
+  labels = c(' 0', ' 2', ' 5', '10 ', '20 '),
+  breaks = c(0, 2, 5, 10, 20)
+) + ggtitle('NGD') + theme_cowplot() +
   ylab('') + xlab('') + theme_void()
-p3 = qplot() + geom_point(aes(e_wols[, 1], e_wols[, 2], colour = unname(wols_mcr)),
-                          size = 1,
-                          alpha = 0.5) + scale_colour_gradientn(
-                            limits = c(0, mx),
-                            trans = 'pseudo_log',
-                            colours = c("blue", "yellow", "red"),
-                            labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
-                            breaks = c(0, 2, 5, 10, 20, 40, 60)
-                          ) + ggtitle('WOLS') + theme_cowplot() +
-  ylab(combos[2, i]) + xlab(combos[1, i]) + theme_void()
-p4 = qplot() + geom_point(aes(e_ols[, 1], e_ols[, 2], colour = unname(ols_mcr)),
-                          size = 1,
-                          alpha = 0.5) + scale_colour_gradientn(
-                            limits = c(0, mx),
-                            trans = 'pseudo_log',
-                            colours = c("blue", "yellow", "red"),
-                            labels = c(' 0', ' 2', ' 5', '10 ', '20 ', '40 ', '60 '),
-                            breaks = c(0, 2, 5, 10, 20, 40, 60)
-                          ) + ggtitle('OLS') + theme_cowplot() +
+p3 = qplot() + geom_point(
+  aes(e_wols[, 1], e_wols[, 2], colour = big$wols$mean_cell_err),
+  size = 0.4,
+  alpha = 0.5
+) + scale_colour_gradientn(
+  limits = c(0, mx),
+  trans = 'pseudo_log',
+  colours = c("blue", "yellow", "red"),
+  labels = c(' 0', ' 2', ' 5', '10 ', '20 '),
+  breaks = c(0, 2, 5, 10, 20)
+) + ggtitle('WOLS') + theme_cowplot() +
+  ylab('') + xlab('') + theme_void()
+p4 = qplot() + geom_point(
+  aes(e_ols[, 1], e_ols[, 2], colour = big$ols$mean_cell_err),
+  size = 0.4,
+  alpha = 0.5
+) + scale_colour_gradientn(
+  limits = c(0, mx),
+  trans = 'pseudo_log',
+  colours = c("blue", "yellow", "red"),
+  labels = c(' 0', ' 2', ' 5', '10 ', '20 '),
+  breaks = c(0, 2, 5, 10, 20)
+) + ggtitle('OLS') + theme_cowplot() +
   ylab('') + xlab('') + theme_void()
 ggarrange(
   p1,
@@ -1050,23 +1526,118 @@ ggarrange(
 )
 ```
 
+For clamped methods.
+
+```{r errcolor_esom_clamp}
+e_ngd_c = EmbedSOM(big$zeroclamp_ngd$unmix_trans, map, parallel = T)
+e_ols_c = EmbedSOM(big$zeroclamp_ols$unmix_trans, map, parallel = T)
+e_wols_c = EmbedSOM(big$zeroclamp_wols$unmix_trans, map, parallel = T)
+mx_c = max(
+  c(
+    big$zeroclamp_ngd$mean_cell_err,
+    big$zeroclamp_wols$mean_cell_err,
+    big$zeroclamp_ols$mean_cell_err
+  )
+)
+p1 = qplot() + geom_point(aes(e_gt[, 1], e_gt[, 2], colour = Error),
+                          size = 0.4,
+                          alpha = 0.5) + scale_colour_gradientn(
+                            limits = c(0, mx),
+                            trans = 'pseudo_log',
+                            colours = c("blue", "yellow", "red"),
+                            labels = c(' 0', '1', ' 2', ' 5', '10 ', '20 '),
+                            breaks = c(0, 1, 2, 5, 10, 20)
+                          ) + ggtitle('Ground Truth') + theme_cowplot() +
+  ylab('') + xlab('') + theme_void()
+p2 = qplot() + geom_point(
+  aes(e_ngd_c[, 1], e_ngd_c[, 2], colour = big$zeroclamp_ngd$mean_cell_err),
+  size = 0.4,
+  alpha = 0.5
+) + scale_colour_gradientn(
+  limits = c(0, mx),
+  trans = 'pseudo_log',
+  colours = c("blue", "yellow", "red"),
+  labels = c(' 0', ' 2', ' 5', '10 ', '20 '),
+  breaks = c(0, 2, 5, 10, 20)
+) + ggtitle('0 clamped NGD') + theme_cowplot() +
+  ylab('') + xlab('') + theme_void()
+p3 = qplot() + geom_point(
+  aes(e_wols_c[, 1], e_wols_c[, 2], colour = big$zeroclamp_wols$mean_cell_err),
+  size = 0.4,
+  alpha = 0.5
+) + scale_colour_gradientn(
+  limits = c(0, mx),
+  trans = 'pseudo_log',
+  colours = c("blue", "yellow", "red"),
+  labels = c(' 0', ' 2', ' 5', '10 ', '20 '),
+  breaks = c(0, 2, 5, 10, 20)
+) + ggtitle('0 clamped WOLS') + theme_cowplot() +
+  ylab('') + xlab('') + theme_void()
+p4 = qplot() + geom_point(
+  aes(e_ols_c[, 1], e_ols_c[, 2], colour = big$zeroclamp_ols$mean_cell_err),
+  size = 0.4,
+  alpha = 0.5
+) + scale_colour_gradientn(
+  limits = c(0, mx),
+  trans = 'pseudo_log',
+  colours = c("blue", "yellow", "red"),
+  labels = c(' 0', ' 2', ' 5', '10 ', '20 '),
+  breaks = c(0, 2, 5, 10, 20)
+) + ggtitle('0 clamped OLS') + theme_cowplot() +
+  ylab('') + xlab('') + theme_void()
+ggarrange(
+  p1,
+  p2,
+  p3,
+  p4,
+  ncol = 2,
+  nrow = 2,
+  common.legend = T,
+  legend = 'right'
+)
+```
+
+Statistical differences in mean squared error distributions between cell types.
+(p-value rounded to 8 decimals)
+
 ```{r ctypes_errstat}
 #one-to-all
-for(un in uq){
-  coords_n=which(rnms==un)
-  rs=t.test(norm(log(as.matrix(ngd_err[coords_n,]))),norm(log(as.matrix(ngd_err[-coords_n,]))))
-  if(rs$p.value<0.05)
-    {print(paste0(un,' type is significantly different from other types combined with p-value of ',rs$p.value))}
+for (un in uq) {
+  coords_n = which(rnms == un)
+  rs = t.test(norm(big$ngd$mean_cell_err[coords_n]),
+              norm(big$ngd$mean_cell_err[-coords_n]))
+  if (rs$p.value < 0.05)
+  {
+    cat(
+      paste0(
+        un,
+        ' type is significantly different from other types combined with p-value of ',
+        round(rs$p.value, 8),
+        '\n'
+      )
+    )
+  }
 }
-combinations=combn(uq,2)
+combinations = combn(uq, 2)
 #one-to-one
-for( i in 1:ncol(combinations))
+for (i in 1:ncol(combinations))
 {
-  coords_a=which(rnms==combinations[1,i])
-  coords_b=which(rnms==combinations[2,i])
-  rs=t.test(norm(log(as.matrix(ngd_err[coords_a,]))),norm(log(as.matrix(ngd_err[coords_b,]))))
-  if(rs$p.value<0.05)
-    {print(paste0(combinations[1,i],' type is significantly different from ',combinations[2,i],' type with p-value of ',rs$p.value))}
+  coords_a = which(rnms == combinations[1, i])
+  coords_b = which(rnms == combinations[2, i])
+  rs = t.test(norm(big$ngd$mean_cell_err[coords_a]),
+              norm(big$ngd$mean_cell_err[coords_b]))
+  if (rs$p.value < 0.05)
+  {
+    cat(
+      paste0(
+        combinations[1, i],
+        ' type is significantly different from ',
+        combinations[2, i],
+        ' type with p-value of ',
+        round(rs$p.value, 8),
+        '\n'
+      )
+    )
+  }
 }
-
 ```
