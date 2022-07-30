@@ -190,12 +190,13 @@ get_data_struct = function(spectra, pheno, n, stronk) {
     nougadmt(
       res[['received']],
       spectra = spectra,
-      snw = 5,
-      spw = 1,
-      nw = 200,
-      start = 2,
+      snw = 55,
+      spw = 261,
+      nw = 1905,
+      start = 91,
       iters = 500,
-      alpha = 0.01,
+      alpha = 0.00272,
+      accel=0.338,
       nthreads = detectCores()
     )$unmixed
   ))
@@ -327,12 +328,26 @@ rm(tmp)
 4. Compare MSE against ground truth
 
 ```{r MSE}
-cat(paste0('MSE for NGD: ', big$ngd$mse , '\n'))
-cat(paste0('MSE for WOLS: ', big$ols$mse , '\n'))
-cat(paste0('MSE for OLS: ', big$wols$mse , '\n'))
-cat(paste0('MSE for NGD clamped to 0: ', big$zeroclamp_ngd$mse , '\n'))
-cat(paste0('MSE for WOLS clamped to 0: ', big$zeroclamp_ols$mse , '\n'))
-cat(paste0('MSE for OLS clamped to 0: ', big$zeroclamp_wols$mse , '\n'))
+cat(paste0('MSE for NGD big dataset: ', big$ngd$mse , '\n'))
+cat(paste0('MSE for WOLS big dataset: ', big$ols$mse , '\n'))
+cat(paste0('MSE for OLS big dataset: ', big$wols$mse , '\n', '\n'))
+cat(paste0('MSE for NGD big dataset clamped to 0: ', big$zeroclamp_ngd$mse , '\n'))
+cat(paste0('MSE for WOLS big dataset clamped to 0: ', big$zeroclamp_ols$mse , '\n'))
+cat(paste0('MSE for OLS big dataset clamped to 0: ', big$zeroclamp_wols$mse , '\n', '\n', '\n'))
+
+cat(paste0('MSE for NGD medium dataset: ', med$ngd$mse , '\n'))
+cat(paste0('MSE for WOLS medium dataset: ', med$ols$mse , '\n'))
+cat(paste0('MSE for OLS medium dataset: ', med$wols$mse , '\n', '\n'))
+cat(paste0('MSE for NGD medium dataset clamped to 0: ', med$zeroclamp_ngd$mse , '\n'))
+cat(paste0('MSE for WOLS medium dataset clamped to 0: ', med$zeroclamp_ols$mse , '\n'))
+cat(paste0('MSE for OLS medium dataset clamped to 0: ', med$zeroclamp_wols$mse , '\n', '\n', '\n'))
+
+cat(paste0('MSE for NGD small dataset: ', small$ngd$mse , '\n'))
+cat(paste0('MSE for WOLS small dataset: ', small$ols$mse , '\n'))
+cat(paste0('MSE for OLS small dataset: ', small$wols$mse , '\n', '\n'))
+cat(paste0('MSE for NGD small dataset clamped to 0: ', small$zeroclamp_ngd$mse , '\n'))
+cat(paste0('MSE for WOLS small dataset clamped to 0: ', small$zeroclamp_ols$mse , '\n'))
+cat(paste0('MSE for OLS small dataset clamped to 0: ', small$zeroclamp_wols$mse , '\n'))
 ```
 
 
