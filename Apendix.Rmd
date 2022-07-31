@@ -13,7 +13,7 @@ This document serves as a supplementary material for my thesis demonstrating som
 
 ## Load libraries, set working directory and seed
 
-```{r setup, include=TRUE, echo=FALSE}
+```{r setup,results='hide'}
 knitr::opts_chunk$set(echo = TRUE)
 library('flowCore')
 library("rjson")
@@ -49,7 +49,7 @@ knitr::opts_knit$set(root.dir = dr) #set for R markdown chunk execution
 
 ## Define functions
 
-```{r fncs, echo=FALSE}
+```{r fncs}
 trans = function(x)
   asinh(x / 10)
 norm = function(x)
@@ -309,7 +309,7 @@ rm(tmp)
 
 4. Compare MSE against ground truth
 
-```{r MSE}
+```{r MSE,echo=FALSE}
 cat(paste0('MSE for NGD big dataset: ', big$ngd$mse , '\n'))
 cat(paste0('MSE for WOLS big dataset: ', big$ols$mse , '\n'))
 cat(paste0('MSE for OLS big dataset: ', big$wols$mse , '\n', '\n'))
