@@ -7,7 +7,7 @@ output: html_document
 
 # Intro
 
-This document serves as a supplementary material for my thesis demonstrating some of the scripting done to achieve the presented results. It should allow anyone to reproduce the data and evaluate the results for themselves.
+This document serves as supplementary material for my thesis demonstrating some of the scripting done to achieve the presented results. It should allow anyone to reproduce the data and evaluate the results for themselves.
 
 # Setup
 
@@ -107,9 +107,12 @@ generate_artificial_cytometry_data = function(spectra, pheno, n, stronk, uncerta
   d = ncol(spectra) #number of detectors
   exp_prob_mtx_normal = pheno[rep(1:n_pheno , round(counts_pheno * n *
                                                       0.825)), ]
-  exp_prob_mtx_dead = dead[rep(1:n_pheno , round(cnts_dead * n * 0.175)), ]#maybe LD expression should increase(complement) with how dead the cells are - eq. with decrease in expr proportion increase LD expr.
-  exp_prob_mtx_dead = exp_prob_mtx_dead * runif(nrow(exp_prob_mtx_dead), 0.3, 0.6) #expression magnitude for dead cells 30-60%
-  exp_prob_mtx_dead[, 'LIVE DEAD Blue'] = runif(nrow(exp_prob_mtx_dead), 0.6, 1)#LD expr for dead cells 60-100%
+ exp_prob_mtx_dead = dead[rep(1:n_pheno , round(cnts_dead * n * 0.175)), ]#maybe LD expression should increase(complement) with how dead the cells are - eq. with decrease in expr proportion increase LD expr.
+  dead_exp=runif(nrow(exp_prob_mtx_dead), 0.3, 0.6)
+  exp_prob_mtx_dead = exp_prob_mtx_dead * dead_exp #expression magnitude for dead cells 30-60%
+  dead_exp = (1-dead_exp) + runif(nrow(exp_prob_mtx_dead), 0.3, 0.5)#LD expr for dead cells 60-100%
+  dead_exp[dead_exp>1]=1
+  exp_prob_mtx_dead[, 'LIVE DEAD Blue']=dead_exp
   exp_prob_mtx_dead = exp_prob_mtx_dead[, rownames(spectra)]
   full_prob_mtx = rbind(exp_prob_mtx_normal, exp_prob_mtx_dead)
   
@@ -1443,8 +1446,8 @@ distinct11 = c(
   'black'
 )
 qplot() + geom_point(aes(e_gt[, 1], e_gt[, 2], colour = rnms),
-                     size = 0.4,
-                     alpha = 0.6)  + ggtitle('Ground Truth') + theme_cowplot() +
+                     size = 0.2,
+                     alpha = 0.5)  + ggtitle('Ground Truth') + theme_cowplot() +
   ylab('') + xlab('') + theme_void() + scale_color_manual(breaks = uq, values = distinct11) +
   guides(color = guide_legend(
     ncol = 2,
